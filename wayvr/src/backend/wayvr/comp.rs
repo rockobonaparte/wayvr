@@ -52,6 +52,38 @@ use wayland_server::Client;
 use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use wayland_server::protocol::wl_surface::WlSurface;
 
+use smithay_client_toolkit::{
+    compositor::{CompositorHandler},
+    delegate_compositor as sct_delegate_compositor,
+    delegate_keyboard as sct_delegate_keyboard,
+    delegate_layer as sct_delegate_layer,
+    delegate_output as sct_delegate_output,
+    delegate_pointer as sct_delegate_pointer,
+    delegate_registry as sct_delegate_registry,
+    delegate_seat as sct_delegate_seat,
+    delegate_shm as sct_delegate_shm,
+    output::{OutputHandler as SCT_OutputHandler, OutputState},
+    registry::{ProvidesRegistryState, RegistryState},
+    registry_handlers,
+    seat::{
+        Capability, SeatHandler as SCT_SeatHandler, SeatState as SCT_SeatState,
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers, RepeatInfo},
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+    },
+    shell::{
+        WaylandSurface,
+        wlr_layer::{
+            LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
+        },
+    },
+    shm::{Shm, ShmHandler as SCT_ShmHandler, slot::SlotPool},
+};
+
+use wayland_client::{
+    Connection, Proxy, QueueHandle,
+    protocol::{wl_keyboard, wl_output as wlc_output, wl_pointer, wl_seat as wlc_seat, wl_shm, wl_surface},
+};
+
 use crate::backend::wayvr::image_importer::ImageImporter;
 use crate::backend::wayvr::{SurfaceBufWithImage, time};
 use crate::ipc::event_queue::SyncEventQueue;
@@ -74,7 +106,26 @@ pub struct Application {
     pub redraw_requests: HashSet<wayland_server::backend::ObjectId>,
     pub popup_manager: PopupManager,
     pub display_handle: DisplayHandle,
+
+    // Client-side external keyboard and mouse logging
+    pub registry_state: RegistryState,
+    pub sct_seat_state: SCT_SeatState,
+    pub keyboard: Option<wl_keyboard::WlKeyboard>,
+    pub pointer: Option<wl_pointer::WlPointer>,
+    pub pool: Option<SlotPool>,
+    pub is_key_logging: bool,  
+    pub client_shm: Shm,
+    pub output_state: OutputState,
 }
+
+sct_delegate_compositor!(Application);
+sct_delegate_output!(Application);
+sct_delegate_seat!(Application);
+sct_delegate_keyboard!(Application);
+sct_delegate_pointer!(Application);
+sct_delegate_layer!(Application);
+sct_delegate_shm!(Application);
+sct_delegate_registry!(Application);
 
 impl Application {
     pub fn cleanup(&mut self) {
@@ -212,6 +263,72 @@ impl compositor::CompositorHandler for Application {
     }
 }
 
+////////////////////////////////////////////////////////////////////////////////////
+// Client-side external keyboard and mouse logging app
+impl ProvidesRegistryState for Application {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+    registry_handlers![OutputState, SCT_SeatState];
+}
+
+// Client-toolkit's CompositorHandler only needs these four surface callbacks.
+// No compositor_state() accessor - that's the server-side Smithay crate.
+impl CompositorHandler for Application {
+    fn scale_factor_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: i32,
+    ) {
+    }
+
+    fn transform_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: wlc_output::Transform,
+    ) {
+    }
+
+    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wlc_output::WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wlc_output::WlOutput,
+    ) {
+    }
+}
+
+impl SCT_OutputHandler for Application {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wlc_output::WlOutput) {}
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wlc_output::WlOutput) {}
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wlc_output::WlOutput) {}
+}
+
+impl SCT_ShmHandler for Application {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.client_shm
+    }
+}
+
 impl SeatHandler for Application {
     type KeyboardFocus = WlSurface;
     type PointerFocus = WlSurface;
@@ -233,6 +350,242 @@ impl SeatHandler for Application {
         _seat: &Seat<Self>,
         _image: smithay::input::pointer::CursorImageStatus,
     ) {
+    }
+}
+
+impl KeyboardHandler for Application {
+    fn enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw: &[u32],
+        _keysyms: &[Keysym],
+    ) {
+        // Proxy::id() requires `use wayland_client::Proxy` in scope
+        println!("Keyboard focus entered surface {:?}", surface.id());
+    }
+
+    fn leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {
+        println!("Keyboard focus left");
+    }
+
+    fn press_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        println!(
+            "Key pressed:  sym={:?}  raw={}",
+            event.keysym, event.raw_code
+        );
+        if event.keysym == Keysym::Escape {
+            println!("Escape pressed - exiting.");
+            self.is_key_logging = false;
+        }
+    }
+
+    fn release_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        println!(
+            "Key release: sym={:?}  raw={}",
+            event.keysym, event.raw_code
+        );
+    }
+
+    fn update_modifiers(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        modifiers: Modifiers,
+        _raw: RawModifiers,
+        _layout: u32,
+    ) {
+        println!(
+            "Modifiers: ctrl={} alt={} shift={} super={}",
+            modifiers.ctrl, modifiers.alt, modifiers.shift, modifiers.logo
+        );
+    }
+
+    // repeat_key is required in 0.20 - called when key-repeat fires.
+    fn repeat_key(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        println!(
+            "Key repeat:   sym={:?}  raw={}",
+            event.keysym, event.raw_code
+        );
+    }
+
+    // update_repeat_info has a default impl, but shown here for clarity
+    fn update_repeat_info(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_keyboard::WlKeyboard,
+        info: RepeatInfo,
+    ) {
+        println!("Repeat info: {:?}", info);
+    }
+}
+
+impl PointerHandler for Application {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        for event in events {
+            match event.kind {
+                PointerEventKind::Enter { serial } => {
+                    println!("Pointer entered surface, serial={serial}");
+                }
+                PointerEventKind::Leave { serial } => {
+                    println!("Pointer left surface, serial={serial}");
+                }
+                PointerEventKind::Motion { time } => {
+                    // event.position is (f64, f64) surface-local coordinates
+                    println!("Motion t={time} pos={:.1?}", event.position);
+                }
+                PointerEventKind::Press {
+                    button,
+                    serial,
+                    time,
+                } => {
+                    // button uses Linux evdev codes: 0x110=left, 0x111=right, 0x112=middle
+                    println!("Button press   button={button:#x} serial={serial} t={time}");
+                }
+                PointerEventKind::Release {
+                    button,
+                    serial,
+                    time,
+                } => {
+                    println!("Button release button={button:#x} serial={serial}, t={time}");
+                }
+                PointerEventKind::Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    // AxisScroll has absolute (f64 pixels) and .discrete (scroll steps, i32)
+                    println!(
+                        "Scroll t=(time) h={:.1}/{:?} v={:.1}/{:?}",
+                        horizontal.absolute,
+                        horizontal.discrete,
+                        vertical.absolute,
+                        vertical.discrete,
+                    );
+                }
+            }
+        }
+    }
+}
+
+impl SCT_SeatHandler for Application {
+    fn seat_state(&mut self) -> &mut SCT_SeatState {
+        &mut self.sct_seat_state
+    }
+
+    fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wlc_seat::WlSeat) {}
+
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wlc_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            println!("Keyboard capability found, binding...");
+            let kbd = self.sct_seat_state.get_keyboard(qh, &seat, None).unwrap();
+            self.keyboard = Some(kbd);
+        }
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            let pointer = self.sct_seat_state.get_pointer(qh, &seat).unwrap();
+            self.pointer = Some(pointer);
+        }
+    }
+
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wlc_seat::WlSeat,
+        capability: Capability,
+    ) {
+        if capability == Capability::Keyboard {
+            if let Some(kbd) = self.keyboard.take() {
+                kbd.release();
+            }
+        }
+        if capability == Capability::Pointer {
+            if let Some(ptr) = self.pointer.take() {
+                ptr.release();
+            }
+        }
+    }
+
+    fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wlc_seat::WlSeat) {}
+
+}
+
+// This sets up the buffer and canvas for capturing external keyboard and mouse inputs.
+impl LayerShellHandler for Application {
+    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
+        self.is_key_logging = false
+    }
+
+    fn configure(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        layer: &LayerSurface,
+        _configure: LayerSurfaceConfigure,
+        _serial: u32,
+    ) {
+        // Commit a minimal 1x1 transparent buffer to satisfy the compositor's
+        // requirement that a surface must have a buffer before it is considered mapped.
+        if self.pool.is_none() {
+            self.pool = Some(SlotPool::new(4, &self.client_shm).unwrap());
+        }
+        let pool = self.pool.as_mut().unwrap();
+        // We're creating a 100x100 window so we can get some mouse events
+        let (buffer, canvas) = pool
+            .create_buffer(100, 100, 400, wl_shm::Format::Argb8888)
+            .unwrap();
+        canvas.fill(0); // fully transparent
+
+        layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
+        layer.wl_surface().damage_buffer(0, 0, 100, 100);
+        layer.wl_surface().commit();
+        let _ = qh;
     }
 }
 

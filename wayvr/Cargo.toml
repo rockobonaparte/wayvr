@@ -83,6 +83,7 @@ sysinfo = { version = "0.37" }
 thiserror = "2.0"
 tracing = "0.1.43"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+smithay-client-toolkit = "0.20"
 uuid = { workspace = true }
 wayland-client = { workspace = true }
 winit = { version = "0.30.12", optional = true }
