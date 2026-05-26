@@ -106,8 +106,10 @@ pub struct Application {
     pub redraw_requests: HashSet<wayland_server::backend::ObjectId>,
     pub popup_manager: PopupManager,
     pub display_handle: DisplayHandle,
+}
 
-    // Client-side external keyboard and mouse logging
+// Client-side external keyboard and mouse logging
+pub struct ClientSideInputApplication {
     pub registry_state: RegistryState,
     pub sct_seat_state: SCT_SeatState,
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -118,14 +120,14 @@ pub struct Application {
     pub output_state: OutputState,
 }
 
-sct_delegate_compositor!(Application);
-sct_delegate_output!(Application);
-sct_delegate_seat!(Application);
-sct_delegate_keyboard!(Application);
-sct_delegate_pointer!(Application);
-sct_delegate_layer!(Application);
-sct_delegate_shm!(Application);
-sct_delegate_registry!(Application);
+sct_delegate_compositor!(ClientSideInputApplication);
+sct_delegate_output!(ClientSideInputApplication);
+sct_delegate_seat!(ClientSideInputApplication);
+sct_delegate_keyboard!(ClientSideInputApplication);
+sct_delegate_pointer!(ClientSideInputApplication);
+sct_delegate_layer!(ClientSideInputApplication);
+sct_delegate_shm!(ClientSideInputApplication);
+sct_delegate_registry!(ClientSideInputApplication);
 
 impl Application {
     pub fn cleanup(&mut self) {
@@ -265,7 +267,7 @@ impl compositor::CompositorHandler for Application {
 
 ////////////////////////////////////////////////////////////////////////////////////
 // Client-side external keyboard and mouse logging app
-impl ProvidesRegistryState for Application {
+impl ProvidesRegistryState for ClientSideInputApplication {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
@@ -274,7 +276,7 @@ impl ProvidesRegistryState for Application {
 
 // Client-toolkit's CompositorHandler only needs these four surface callbacks.
 // No compositor_state() accessor - that's the server-side Smithay crate.
-impl CompositorHandler for Application {
+impl CompositorHandler for ClientSideInputApplication {
     fn scale_factor_changed(
         &mut self,
         _: &Connection,
@@ -314,7 +316,7 @@ impl CompositorHandler for Application {
     }
 }
 
-impl SCT_OutputHandler for Application {
+impl SCT_OutputHandler for ClientSideInputApplication {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
@@ -323,7 +325,7 @@ impl SCT_OutputHandler for Application {
     fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wlc_output::WlOutput) {}
 }
 
-impl SCT_ShmHandler for Application {
+impl SCT_ShmHandler for ClientSideInputApplication {
     fn shm_state(&mut self) -> &mut Shm {
         &mut self.client_shm
     }
@@ -353,7 +355,7 @@ impl SeatHandler for Application {
     }
 }
 
-impl KeyboardHandler for Application {
+impl KeyboardHandler for ClientSideInputApplication {
     fn enter(
         &mut self,
         _: &Connection,
@@ -454,7 +456,7 @@ impl KeyboardHandler for Application {
     }
 }
 
-impl PointerHandler for Application {
+impl PointerHandler for ClientSideInputApplication {
     fn pointer_frame(
         &mut self,
         _: &Connection,
@@ -508,7 +510,7 @@ impl PointerHandler for Application {
     }
 }
 
-impl SCT_SeatHandler for Application {
+impl SCT_SeatHandler for ClientSideInputApplication {
     fn seat_state(&mut self) -> &mut SCT_SeatState {
         &mut self.sct_seat_state
     }
@@ -557,7 +559,7 @@ impl SCT_SeatHandler for Application {
 }
 
 // This sets up the buffer and canvas for capturing external keyboard and mouse inputs.
-impl LayerShellHandler for Application {
+impl LayerShellHandler for ClientSideInputApplication {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
         self.is_key_logging = false
     }

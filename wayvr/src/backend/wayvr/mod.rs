@@ -7,6 +7,7 @@ mod time;
 pub mod window;
 use anyhow::Context;
 use comp::Application;
+use comp::ClientSideInputApplication;
 use process::ProcessVec;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
@@ -246,32 +247,7 @@ impl WvrServerState {
 
         let dma_importer = ImageImporter::new(gfx);
 
-        // Client-side registration for keyboard and mouse logging.
-        let conn = Connection::connect_to_env().unwrap();
-        let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
-        let qh: QueueHandle<Application> = event_queue.handle();
-        let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
-        let layer_shell = LayerShell::bind(&globals, &qh).unwrap();
-        let client_shm = Shm::bind(&globals, &qh).unwrap();
-
-        // Create an overlay surface with exclusive keyboard interactivity.
-        // This grants us keyboard focus immediately without a user click.
-        // The surface is invisible but "real" enough for the compositor to
-        // route keyboard events to us.
-        let surface = compositor_state.create_surface(&qh);
-        let layer_surface = layer_shell.create_layer_surface(
-            &qh,
-            surface,
-            Layer::Overlay,
-            Some("kbd-capture"),
-            None, // first available output
-        );
-        layer_surface.set_size(100, 100);
-        layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT);
-        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-        layer_surface.commit();
-
-        let mut state = Application {
+        let state = Application {
             image_importer: dma_importer,
             display_handle: dh,
             compositor,
@@ -287,23 +263,49 @@ impl WvrServerState {
             redraw_requests: HashSet::new(),
             dmabuf_state,
             popup_manager: PopupManager::default(),
-            client_shm,
-            registry_state: RegistryState::new(&globals),
-            sct_seat_state: SCT_SeatState::new(&globals, &qh),
-            output_state: OutputState::new(&globals, &qh),
-            pool: None,
-            keyboard: None,
-            pointer: None,
-            is_key_logging: true,
         };
+        
+        let handle = thread::spawn(|| {
+            // Client-side registration for keyboard and mouse logging.
+            let conn = Connection::connect_to_env().unwrap();
+            let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
+            let qh: QueueHandle<ClientSideInputApplication> = event_queue.handle();
+            let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
+            let layer_shell = LayerShell::bind(&globals, &qh).unwrap();
+            let client_shm = Shm::bind(&globals, &qh).unwrap();
 
+            let mut client_app = ClientSideInputApplication {
+                client_shm,
+                registry_state: RegistryState::new(&globals),
+                sct_seat_state: SCT_SeatState::new(&globals, &qh),
+                output_state: OutputState::new(&globals, &qh),
+                pool: None,
+                keyboard: None,
+                pointer: None,
+                is_key_logging: true,
+            };
 
-        event_queue.blocking_dispatch(&mut state).unwrap();
-        // let handle = thread::spawn(|| {
-        //     while state.is_key_logging {
-        //         event_queue.blocking_dispatch(&mut state).unwrap();
-        //     }
-        // });
+            // Create an overlay surface with exclusive keyboard interactivity.
+            // This grants us keyboard focus immediately without a user click.
+            // The surface is invisible but "real" enough for the compositor to
+            // route keyboard events to us.
+            let surface = compositor_state.create_surface(&qh);
+            let layer_surface = layer_shell.create_layer_surface(
+                &qh,
+                surface,
+                Layer::Overlay,
+                Some("kbd-capture"),
+                None, // first available output
+            );
+            layer_surface.set_size(100, 100);
+            layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+            layer_surface.commit();
+
+            while client_app.is_key_logging {
+                event_queue.blocking_dispatch(&mut client_app).unwrap();
+            }
+        });
         Ok(Self {
             manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,
             processes: ProcessVec::new(),
