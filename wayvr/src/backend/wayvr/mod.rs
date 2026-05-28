@@ -601,13 +601,13 @@ impl WvrServerState {
         // them into our context.
         match wvr_server.rx.try_recv() {
             Ok(ClientSideInput::KeyDown(key_code)) => {
-                println!("send_key({key_code} true");
-                wvr_server.send_key(key_code, true);
+                println!("send_key({key_code} + 8) true");
+                wvr_server.send_key(key_code + 8, true);
             }
 
             Ok(ClientSideInput::KeyUp(key_code)) => {
-                println!("send_key({key_code} false");
-                wvr_server.send_key(key_code, false);
+                println!("send_key({key_code} + 8) false");
+                wvr_server.send_key(key_code + 8, false);
             }
             Err(mpsc::TryRecvError::Empty) => {
             }

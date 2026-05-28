@@ -406,7 +406,7 @@ impl KeyboardHandler for ClientSideInputApplication {
             println!("Escape pressed - exiting.");
             self.is_key_logging = false;
         }
-        let _ = self.tx.send(ClientSideInput::KeyDown(event.keysym.raw()));
+        let _ = self.tx.send(ClientSideInput::KeyDown(event.raw_code));
     }
 
     fn release_key(
@@ -421,7 +421,7 @@ impl KeyboardHandler for ClientSideInputApplication {
             "Key release: sym={:?}  raw={}",
             event.keysym, event.raw_code
         );
-        let _ = self.tx.send(ClientSideInput::KeyUp(event.keysym.raw()));
+        let _ = self.tx.send(ClientSideInput::KeyUp(event.raw_code));
     }
 
     fn update_modifiers(
