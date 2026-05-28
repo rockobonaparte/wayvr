@@ -8,6 +8,9 @@ pub mod window;
 use anyhow::Context;
 use comp::Application;
 use comp::ClientSideInputApplication;
+use comp::ClientSideInput;
+use comp::CLIENT_CAP_WINDOW_WIDTH;
+use comp::CLIENT_CAP_WINDOW_HEIGHT;
 use process::ProcessVec;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
@@ -54,6 +57,7 @@ use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
     sync::Arc,
+    sync::mpsc,
     time::{Duration, Instant},
 };
 use vulkano::image::view::ImageView;
@@ -136,6 +140,7 @@ pub struct WvrServerState {
     mouse_freeze: Instant,
     window_to_overlay: HashMap<window::WindowHandle, OverlayID>,
     overlay_to_window: SecondaryMap<OverlayID, window::WindowHandle>,
+    pub rx: mpsc::Receiver<ClientSideInput>,
 }
 
 pub enum MouseIndex {
@@ -265,7 +270,22 @@ impl WvrServerState {
             popup_manager: PopupManager::default(),
         };
         
-        let handle = thread::spawn(|| {
+        let (tx, rx) = mpsc::channel();
+        let wvr_self = WvrServerState {
+            manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,
+            processes: ProcessVec::new(),
+            wm: window::WindowManager::new(),
+            ticks: 0,
+            tasks,
+            cur_modifiers: 0,
+            signals,
+            mouse_freeze: Instant::now(),
+            window_to_overlay: HashMap::new(),
+            overlay_to_window: SecondaryMap::new(),
+            rx: rx,
+        };
+
+        let client_input_handle = thread::spawn(|| {
             // Client-side registration for keyboard and mouse logging.
             let conn = Connection::connect_to_env().unwrap();
             let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
@@ -283,6 +303,7 @@ impl WvrServerState {
                 keyboard: None,
                 pointer: None,
                 is_key_logging: true,
+                tx: tx
             };
 
             // Create an overlay surface with exclusive keyboard interactivity.
@@ -297,7 +318,7 @@ impl WvrServerState {
                 Some("kbd-capture"),
                 None, // first available output
             );
-            layer_surface.set_size(100, 100);
+            layer_surface.set_size(CLIENT_CAP_WINDOW_WIDTH, CLIENT_CAP_WINDOW_HEIGHT);
             layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT);
             layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
             layer_surface.commit();
@@ -306,18 +327,20 @@ impl WvrServerState {
                 event_queue.blocking_dispatch(&mut client_app).unwrap();
             }
         });
-        Ok(Self {
-            manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,
-            processes: ProcessVec::new(),
-            wm: window::WindowManager::new(),
-            ticks: 0,
-            tasks,
-            cur_modifiers: 0,
-            signals,
-            mouse_freeze: Instant::now(),
-            window_to_overlay: HashMap::new(),
-            overlay_to_window: SecondaryMap::new(),
-        })
+        Ok(wvr_self)
+
+        // Ok(Self {
+        //     manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,
+        //     processes: ProcessVec::new(),
+        //     wm: window::WindowManager::new(),
+        //     ticks: 0,
+        //     tasks,
+        //     cur_modifiers: 0,
+        //     signals,
+        //     mouse_freeze: Instant::now(),
+        //     window_to_overlay: HashMap::new(),
+        //     overlay_to_window: SecondaryMap::new(),
+        // })
     }
 
     #[allow(clippy::too_many_lines)]
@@ -571,6 +594,25 @@ impl WvrServerState {
                     }
                 }
             }
+        }
+
+
+        // Check for client-side keyboard and mouse control events and inject
+        // them into our context.
+        match wvr_server.rx.try_recv() {
+            Ok(ClientSideInput::KeyDown(key_code)) => {
+                println!("send_key({key_code} true");
+                wvr_server.send_key(key_code, true);
+            }
+
+            Ok(ClientSideInput::KeyUp(key_code)) => {
+                println!("send_key({key_code} false");
+                wvr_server.send_key(key_code, false);
+            }
+            Err(mpsc::TryRecvError::Empty) => {
+            }
+            Err(mpsc::TryRecvError::Disconnected) => {
+            }        
         }
 
         wvr_server.manager.tick_wayland(&mut wvr_server.processes)?;

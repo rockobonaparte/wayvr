@@ -35,7 +35,7 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::OwnedFd;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 
 use smithay::utils::Serial;
 use smithay::wayland::compositor::{self, BufferAssignment, SurfaceAttributes, send_surface_state};
@@ -84,8 +84,11 @@ use wayland_client::{
     protocol::{wl_keyboard, wl_output as wlc_output, wl_pointer, wl_seat as wlc_seat, wl_shm, wl_surface},
 };
 
+pub const CLIENT_CAP_WINDOW_WIDTH: u32 = 400;
+pub const CLIENT_CAP_WINDOW_HEIGHT: u32 = 400;
+
 use crate::backend::wayvr::image_importer::ImageImporter;
-use crate::backend::wayvr::{SurfaceBufWithImage, time};
+use crate::backend::wayvr::{SurfaceBufWithImage, WvrServerState, time};
 use crate::ipc::event_queue::SyncEventQueue;
 
 use super::WayVRTask;
@@ -108,6 +111,11 @@ pub struct Application {
     pub display_handle: DisplayHandle,
 }
 
+pub enum ClientSideInput {
+    KeyDown(u32),
+    KeyUp(u32),
+}
+
 // Client-side external keyboard and mouse logging
 pub struct ClientSideInputApplication {
     pub registry_state: RegistryState,
@@ -118,6 +126,7 @@ pub struct ClientSideInputApplication {
     pub is_key_logging: bool,  
     pub client_shm: Shm,
     pub output_state: OutputState,
+    pub tx: mpsc::Sender<ClientSideInput>,
 }
 
 sct_delegate_compositor!(ClientSideInputApplication);
@@ -390,13 +399,14 @@ impl KeyboardHandler for ClientSideInputApplication {
         event: KeyEvent,
     ) {
         println!(
-            "Key pressed:  sym={:?}  raw={}",
+            "Key pressed: sym={:?}  raw={}",
             event.keysym, event.raw_code
         );
         if event.keysym == Keysym::Escape {
             println!("Escape pressed - exiting.");
             self.is_key_logging = false;
         }
+        let _ = self.tx.send(ClientSideInput::KeyDown(event.keysym.raw()));
     }
 
     fn release_key(
@@ -411,6 +421,7 @@ impl KeyboardHandler for ClientSideInputApplication {
             "Key release: sym={:?}  raw={}",
             event.keysym, event.raw_code
         );
+        let _ = self.tx.send(ClientSideInput::KeyUp(event.keysym.raw()));
     }
 
     fn update_modifiers(
@@ -578,14 +589,22 @@ impl LayerShellHandler for ClientSideInputApplication {
             self.pool = Some(SlotPool::new(4, &self.client_shm).unwrap());
         }
         let pool = self.pool.as_mut().unwrap();
-        // We're creating a 100x100 window so we can get some mouse events
+        // We're creating a window so we can get some mouse events
         let (buffer, canvas) = pool
-            .create_buffer(100, 100, 400, wl_shm::Format::Argb8888)
+            .create_buffer(
+                CLIENT_CAP_WINDOW_WIDTH as i32,
+                CLIENT_CAP_WINDOW_HEIGHT as i32,
+                400,
+                wl_shm::Format::Argb8888)
             .unwrap();
         canvas.fill(0); // fully transparent
 
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer.wl_surface().damage_buffer(0, 0, 100, 100);
+        layer.wl_surface().damage_buffer(
+            0,
+            0,
+            CLIENT_CAP_WINDOW_WIDTH as i32,
+            CLIENT_CAP_WINDOW_HEIGHT as i32);
         layer.wl_surface().commit();
         let _ = qh;
     }
