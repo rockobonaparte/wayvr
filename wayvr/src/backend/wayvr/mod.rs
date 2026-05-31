@@ -9,8 +9,6 @@ use anyhow::Context;
 use comp::Application;
 use comp::ClientSideInputApplication;
 use comp::ClientSideInput;
-use comp::CLIENT_CAP_WINDOW_WIDTH;
-use comp::CLIENT_CAP_WINDOW_HEIGHT;
 use process::ProcessVec;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
@@ -72,6 +70,7 @@ use wlx_capture::frame::Transform;
 use wlx_common::desktop_finder::DesktopFinder;
 use xkbcommon::xkb;
 
+use smithay::reexports::wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
 use crate::{
     backend::{
         task::{OverlayTask, TaskContainer, TaskType, ToggleMode},
@@ -141,6 +140,7 @@ pub struct WvrServerState {
     window_to_overlay: HashMap<window::WindowHandle, OverlayID>,
     overlay_to_window: SecondaryMap<OverlayID, window::WindowHandle>,
     pub rx: mpsc::Receiver<ClientSideInput>,
+    _client_input_thread: std::thread::JoinHandle<()>,
 }
 
 pub enum MouseIndex {
@@ -271,6 +271,55 @@ impl WvrServerState {
         };
         
         let (tx, rx) = mpsc::channel();
+
+        let client_input_handle = thread::spawn(|| {
+            let conn = Connection::connect_to_env().expect("client side input thread failed to connect to Wayland display");
+            let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
+            let qh: QueueHandle<ClientSideInputApplication> = event_queue.handle();
+
+            let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
+            let layer_shell      = LayerShell::bind(&globals, &qh).unwrap();
+            let client_shm       = Shm::bind(&globals, &qh).unwrap();
+
+            // Relative-pointer manager — gives us compositor-wide delta motion
+            // without requiring a pointer lock or owning the cursor.
+            let relative_pointer_manager: Option<ZwpRelativePointerManagerV1> =
+                globals.bind(&qh, 1..=1, ()).ok();
+
+            let mut client_app = ClientSideInputApplication {
+                client_shm,
+                registry_state:          RegistryState::new(&globals),
+                sct_seat_state:          SCT_SeatState::new(&globals, &qh),
+                output_state:            OutputState::new(&globals, &qh),
+                pool:                    None,
+                keyboard:                None,
+                pointer:                 None,
+                is_key_logging:          true,
+                tx,
+                relative_pointer_manager,
+                relative_pointer:        None,
+            };
+
+            // Layer surface: still needed for KeyboardInteractivity::Exclusive,
+            // but size is now 1×1 (see LayerShellHandler::configure in comp.rs).
+            let surface = compositor_state.create_surface(&qh);
+            let layer_surface = layer_shell.create_layer_surface(
+                &qh,
+                surface,
+                Layer::Overlay,
+                Some("kbd-capture"),
+                None,
+            );
+            layer_surface.set_size(1, 1);  // was CLIENT_CAP_WINDOW_WIDTH/HEIGHT
+            layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+            layer_surface.commit();
+
+            while client_app.is_key_logging {
+                event_queue.blocking_dispatch(&mut client_app).expect("client side input thread failed to dispatch input events");
+            }
+        });
+                
         let wvr_self = WvrServerState {
             manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,
             processes: ProcessVec::new(),
@@ -283,50 +332,9 @@ impl WvrServerState {
             window_to_overlay: HashMap::new(),
             overlay_to_window: SecondaryMap::new(),
             rx: rx,
+            _client_input_thread: client_input_handle,
         };
 
-        let client_input_handle = thread::spawn(|| {
-            // Client-side registration for keyboard and mouse logging.
-            let conn = Connection::connect_to_env().unwrap();
-            let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
-            let qh: QueueHandle<ClientSideInputApplication> = event_queue.handle();
-            let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
-            let layer_shell = LayerShell::bind(&globals, &qh).unwrap();
-            let client_shm = Shm::bind(&globals, &qh).unwrap();
-
-            let mut client_app = ClientSideInputApplication {
-                client_shm,
-                registry_state: RegistryState::new(&globals),
-                sct_seat_state: SCT_SeatState::new(&globals, &qh),
-                output_state: OutputState::new(&globals, &qh),
-                pool: None,
-                keyboard: None,
-                pointer: None,
-                is_key_logging: true,
-                tx: tx
-            };
-
-            // Create an overlay surface with exclusive keyboard interactivity.
-            // This grants us keyboard focus immediately without a user click.
-            // The surface is invisible but "real" enough for the compositor to
-            // route keyboard events to us.
-            let surface = compositor_state.create_surface(&qh);
-            let layer_surface = layer_shell.create_layer_surface(
-                &qh,
-                surface,
-                Layer::Overlay,
-                Some("kbd-capture"),
-                None, // first available output
-            );
-            layer_surface.set_size(CLIENT_CAP_WINDOW_WIDTH, CLIENT_CAP_WINDOW_HEIGHT);
-            layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT);
-            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-            layer_surface.commit();
-
-            while client_app.is_key_logging {
-                event_queue.blocking_dispatch(&mut client_app).unwrap();
-            }
-        });
         Ok(wvr_self)
 
         // Ok(Self {
@@ -598,22 +606,65 @@ impl WvrServerState {
 
 
         // Check for client-side keyboard and mouse control events and inject
-        // them into our context.
-        match wvr_server.rx.try_recv() {
-            Ok(ClientSideInput::KeyDown(key_code)) => {
-                println!("send_key({key_code} + 8) true");
-                wvr_server.send_key(key_code + 8, true);
+        // them into our context. Hit it in a loop to drain out all the event
+        // especially since we can have keyboard, mouse movement, and mouse
+        // button events flying in simultaneously.
+        loop {
+            match wvr_server.rx.try_recv() {
+                Ok(ClientSideInput::KeyDown(key_code)) => {
+                    wvr_server.send_key(key_code + 8, true);
+                }
+                Ok(ClientSideInput::KeyUp(key_code)) => {
+                    wvr_server.send_key(key_code + 8, false);
+                }
+                Ok(ClientSideInput::MouseMove { dx, dy }) => {
+                    // Apply the relative delta to whichever WayVR window
+                    // currently holds mouse focus, clamped to that window's size.
+                    if let Some(mouse_state) = wvr_server.wm.mouse.clone() {
+                        let handle = mouse_state.hover_window;
+                        if let Some(window) = wvr_server.wm.windows.get(&handle) {
+                            let w = window.size_x as f64;
+                            let h = window.size_y as f64;
+                            // Current position as f64, apply delta, clamp to window bounds.
+                            let new_x = (mouse_state.x as f64 + dx).clamp(0.0, w - 1.0) as u32;
+                            let new_y = (mouse_state.y as f64 + dy).clamp(0.0, h - 1.0) as u32;
+                            wvr_server.send_mouse_move(handle, new_x, new_y);
+                        }
+                    }
+                }
+                Ok(ClientSideInput::MouseDown { button }) => {
+                    // Map Linux evdev button codes to WayVR's MouseIndex.
+                    // 0x110 = BTN_LEFT, 0x111 = BTN_RIGHT, 0x112 = BTN_MIDDLE
+                    let index = match button {
+                        0x110 => Some(MouseIndex::Left),
+                        0x111 => Some(MouseIndex::Right),
+                        0x112 => Some(MouseIndex::Center),
+                        _     => None,
+                    };
+                    if let (Some(index), Some(mouse_state)) = (index, wvr_server.wm.mouse.clone()) {
+                        // click_freeze of 0 means no freeze delay — adjust if needed.
+                        wvr_server.send_mouse_down(0, mouse_state.hover_window, index);
+                    }
+                }
+                Ok(ClientSideInput::MouseUp { button }) => {
+                    let index = match button {
+                        0x110 => Some(MouseIndex::Left),
+                        0x111 => Some(MouseIndex::Right),
+                        0x112 => Some(MouseIndex::Center),
+                        _     => None,
+                    };
+                    if let Some(index) = index {
+                        wvr_server.send_mouse_up(index);
+                    }
+                }
+                Ok(ClientSideInput::MouseScroll { dx, dy }) => {
+                    wvr_server.send_mouse_scroll(WheelDelta { x: dx as f32, y: dy as f32 });
+                }
+                Err(mpsc::TryRecvError::Empty)        => break,
+                Err(mpsc::TryRecvError::Disconnected) => break,
             }
-
-            Ok(ClientSideInput::KeyUp(key_code)) => {
-                println!("send_key({key_code} + 8) false");
-                wvr_server.send_key(key_code + 8, false);
-            }
-            Err(mpsc::TryRecvError::Empty) => {
-            }
-            Err(mpsc::TryRecvError::Disconnected) => {
-            }        
         }
+
 
         wvr_server.manager.tick_wayland(&mut wvr_server.processes)?;
 

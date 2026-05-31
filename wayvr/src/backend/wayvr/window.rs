@@ -146,7 +146,7 @@ impl Window {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct MouseState {
     pub hover_window: WindowHandle,
     pub x: u32,

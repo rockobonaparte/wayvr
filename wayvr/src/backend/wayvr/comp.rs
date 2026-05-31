@@ -51,6 +51,17 @@ use smithay::wayland::shell::xdg::{
 use wayland_server::Client;
 use wayland_server::backend::{ClientData, ClientId, DisconnectReason};
 use wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_protocols::wp::{
+    pointer_constraints::zv1::client::{
+        zwp_locked_pointer_v1::ZwpLockedPointerV1,
+        zwp_confined_pointer_v1::ZwpConfinedPointerV1,
+        zwp_pointer_constraints_v1::{self, ZwpPointerConstraintsV1},
+    },
+    relative_pointer::zv1::client::{
+        zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+        zwp_relative_pointer_v1::{self, ZwpRelativePointerV1},
+    },
+};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler},
@@ -84,9 +95,6 @@ use wayland_client::{
     protocol::{wl_keyboard, wl_output as wlc_output, wl_pointer, wl_seat as wlc_seat, wl_shm, wl_surface},
 };
 
-pub const CLIENT_CAP_WINDOW_WIDTH: u32 = 400;
-pub const CLIENT_CAP_WINDOW_HEIGHT: u32 = 400;
-
 use crate::backend::wayvr::image_importer::ImageImporter;
 use crate::backend::wayvr::{SurfaceBufWithImage, WvrServerState, time};
 use crate::ipc::event_queue::SyncEventQueue;
@@ -114,6 +122,10 @@ pub struct Application {
 pub enum ClientSideInput {
     KeyDown(u32),
     KeyUp(u32),
+    MouseMove { dx: f64, dy: f64 },
+    MouseDown { button: u32 },
+    MouseUp   { button: u32 },
+    MouseScroll { dx: f64, dy: f64 },    
 }
 
 // Client-side external keyboard and mouse logging
@@ -123,10 +135,12 @@ pub struct ClientSideInputApplication {
     pub keyboard: Option<wl_keyboard::WlKeyboard>,
     pub pointer: Option<wl_pointer::WlPointer>,
     pub pool: Option<SlotPool>,
-    pub is_key_logging: bool,  
+    pub is_key_logging: bool,
     pub client_shm: Shm,
     pub output_state: OutputState,
     pub tx: mpsc::Sender<ClientSideInput>,
+    pub relative_pointer_manager: Option<ZwpRelativePointerManagerV1>,
+    pub relative_pointer: Option<ZwpRelativePointerV1>,
 }
 
 sct_delegate_compositor!(ClientSideInputApplication);
@@ -478,47 +492,79 @@ impl PointerHandler for ClientSideInputApplication {
         for event in events {
             match event.kind {
                 PointerEventKind::Enter { serial } => {
-                    println!("Pointer entered surface, serial={serial}");
+                    // Surface entered — no action needed; relative motion is
+                    // compositor-wide and does not require the surface to be entered.
+                    let _ = serial;
                 }
-                PointerEventKind::Leave { serial } => {
-                    println!("Pointer left surface, serial={serial}");
+                PointerEventKind::Leave { .. } => {}
+                PointerEventKind::Motion { .. } => {
+                    // Absolute position — ignored here.
+                    // Relative deltas arrive via ZwpRelativePointerV1::RelativeMotion.
                 }
-                PointerEventKind::Motion { time } => {
-                    // event.position is (f64, f64) surface-local coordinates
-                    println!("Motion t={time} pos={:.1?}", event.position);
+                PointerEventKind::Press { button, .. } => {
+                    let _ = self.tx.send(ClientSideInput::MouseDown { button });
                 }
-                PointerEventKind::Press {
-                    button,
-                    serial,
-                    time,
-                } => {
-                    // button uses Linux evdev codes: 0x110=left, 0x111=right, 0x112=middle
-                    println!("Button press   button={button:#x} serial={serial} t={time}");
+                PointerEventKind::Release { button, .. } => {
+                    let _ = self.tx.send(ClientSideInput::MouseUp { button });
                 }
-                PointerEventKind::Release {
-                    button,
-                    serial,
-                    time,
-                } => {
-                    println!("Button release button={button:#x} serial={serial}, t={time}");
-                }
-                PointerEventKind::Axis {
-                    horizontal,
-                    vertical,
-                    ..
-                } => {
-                    // AxisScroll has absolute (f64 pixels) and .discrete (scroll steps, i32)
-                    println!(
-                        "Scroll t=(time) h={:.1}/{:?} v={:.1}/{:?}",
-                        horizontal.absolute,
-                        horizontal.discrete,
-                        vertical.absolute,
-                        vertical.discrete,
-                    );
+                PointerEventKind::Axis { horizontal, vertical, .. } => {
+                    let _ = self.tx.send(ClientSideInput::MouseScroll {
+                        dx: horizontal.absolute,
+                        dy: vertical.absolute,
+                    });
                 }
             }
         }
     }
+}
+
+impl wayland_client::Dispatch<ZwpRelativePointerManagerV1, ()> for ClientSideInputApplication {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpRelativePointerManagerV1,
+        _event: smithay::reexports::wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // no events on the manager itself
+    }
+}
+
+impl wayland_client::Dispatch<ZwpRelativePointerV1, ()> for ClientSideInputApplication {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpRelativePointerV1,
+        event: zwp_relative_pointer_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let zwp_relative_pointer_v1::Event::RelativeMotion { dx, dy, .. } = event {
+            // dx/dy are pointer-acceleration-applied surface-local deltas.
+            // dx_unaccel/dy_unaccel are raw hardware deltas — use those if WayVR
+            // applies its own acceleration curve. Here we use the accelerated values
+            // to match desktop conventions.
+            let _ = state.tx.send(ClientSideInput::MouseMove { dx, dy });
+        }
+    }
+}
+
+// These two are needed to satisfy wayland-client's Dispatch bounds even though
+// we never create these object types.  They have no events in practice.
+impl wayland_client::Dispatch<ZwpPointerConstraintsV1, ()> for ClientSideInputApplication {
+    fn event(_: &mut Self, _: &ZwpPointerConstraintsV1,
+        _: zwp_pointer_constraints_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+impl wayland_client::Dispatch<ZwpLockedPointerV1, ()> for ClientSideInputApplication {
+    fn event(_: &mut Self, _: &ZwpLockedPointerV1,
+        _: smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::Event,
+        _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+}
+impl wayland_client::Dispatch<ZwpConfinedPointerV1, ()> for ClientSideInputApplication {
+    fn event(_: &mut Self, _: &ZwpConfinedPointerV1,
+        _: smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_confined_pointer_v1::Event,
+        _: &(), _: &Connection, _: &QueueHandle<Self>) {}
 }
 
 impl SCT_SeatHandler for ClientSideInputApplication {
@@ -542,6 +588,14 @@ impl SCT_SeatHandler for ClientSideInputApplication {
         }
         if capability == Capability::Pointer && self.pointer.is_none() {
             let pointer = self.sct_seat_state.get_pointer(qh, &seat).unwrap();
+
+            // Subscribe to relative motion on this pointer.
+            // No lock needed — ZwpRelativePointerV1 fires alongside normal pointer
+            // events without stealing focus or suppressing delivery elsewhere.
+            if let Some(rpm) = &self.relative_pointer_manager {
+                self.relative_pointer = Some(rpm.get_relative_pointer(&pointer, qh, ()));
+            }
+
             self.pointer = Some(pointer);
         }
     }
@@ -559,6 +613,10 @@ impl SCT_SeatHandler for ClientSideInputApplication {
             }
         }
         if capability == Capability::Pointer {
+            // Destroy relative pointer first — it holds a reference to wl_pointer.
+            if let Some(rp) = self.relative_pointer.take() {
+                rp.destroy();
+            }
             if let Some(ptr) = self.pointer.take() {
                 ptr.release();
             }
@@ -583,28 +641,21 @@ impl LayerShellHandler for ClientSideInputApplication {
         _configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        // Commit a minimal 1x1 transparent buffer to satisfy the compositor's
-        // requirement that a surface must have a buffer before it is considered mapped.
         if self.pool.is_none() {
             self.pool = Some(SlotPool::new(4, &self.client_shm).unwrap());
         }
         let pool = self.pool.as_mut().unwrap();
-        // We're creating a window so we can get some mouse events
+
+        // 1×1 fully-transparent buffer — satisfies the compositor's "must have
+        // a buffer" requirement without covering any screen area that would
+        // intercept pointer enter/leave events.
         let (buffer, canvas) = pool
-            .create_buffer(
-                CLIENT_CAP_WINDOW_WIDTH as i32,
-                CLIENT_CAP_WINDOW_HEIGHT as i32,
-                400,
-                wl_shm::Format::Argb8888)
+            .create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
             .unwrap();
-        canvas.fill(0); // fully transparent
+        canvas.fill(0);
 
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer.wl_surface().damage_buffer(
-            0,
-            0,
-            CLIENT_CAP_WINDOW_WIDTH as i32,
-            CLIENT_CAP_WINDOW_HEIGHT as i32);
+        layer.wl_surface().damage_buffer(0, 0, 1, 1);
         layer.wl_surface().commit();
         let _ = qh;
     }
