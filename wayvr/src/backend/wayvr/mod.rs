@@ -310,16 +310,19 @@ impl WvrServerState {
                 Some("kbd-capture"),
                 None,
             );
-            layer_surface.set_size(1, 1);  // was CLIENT_CAP_WINDOW_WIDTH/HEIGHT
-            layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT);
+            // 0,0 means "use the full output size" in layer-shell
+            layer_surface.set_size(0, 0);
+            layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT | Anchor::BOTTOM);
+            layer_surface.set_exclusive_zone(-1); // don't push other surfaces aside
             layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+
             layer_surface.commit();
 
             while client_app.is_key_logging {
                 event_queue.blocking_dispatch(&mut client_app).expect("client side input thread failed to dispatch input events");
             }
         });
-                
+
         let wvr_self = WvrServerState {
             manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,
             processes: ProcessVec::new(),

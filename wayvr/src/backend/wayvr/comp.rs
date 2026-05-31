@@ -495,23 +495,29 @@ impl PointerHandler for ClientSideInputApplication {
                     // Surface entered — no action needed; relative motion is
                     // compositor-wide and does not require the surface to be entered.
                     let _ = serial;
+                    println!("Mouse Enter Event");
                 }
-                PointerEventKind::Leave { .. } => {}
+                PointerEventKind::Leave { .. } => {
+                    println!("Mouse Leave Event");
+                }
                 PointerEventKind::Motion { .. } => {
                     // Absolute position — ignored here.
                     // Relative deltas arrive via ZwpRelativePointerV1::RelativeMotion.
                 }
                 PointerEventKind::Press { button, .. } => {
                     let _ = self.tx.send(ClientSideInput::MouseDown { button });
+                    println!("Mouse Press {button}");
                 }
                 PointerEventKind::Release { button, .. } => {
                     let _ = self.tx.send(ClientSideInput::MouseUp { button });
+                    println!("Mouse Release {button}");
                 }
                 PointerEventKind::Axis { horizontal, vertical, .. } => {
                     let _ = self.tx.send(ClientSideInput::MouseScroll {
                         dx: horizontal.absolute,
                         dy: vertical.absolute,
                     });
+                    println!("Mouse Axis {0} {1}", horizontal.absolute, vertical.absolute);
                 }
             }
         }
@@ -541,13 +547,18 @@ impl wayland_client::Dispatch<ZwpRelativePointerV1, ()> for ClientSideInputAppli
         _qh: &QueueHandle<Self>,
     ) {
         if let zwp_relative_pointer_v1::Event::RelativeMotion { dx, dy, .. } = event {
-            // dx/dy are pointer-acceleration-applied surface-local deltas.
-            // dx_unaccel/dy_unaccel are raw hardware deltas — use those if WayVR
-            // applies its own acceleration curve. Here we use the accelerated values
-            // to match desktop conventions.
+            println!("Mouse Relative: {dx} {dy}");
             let _ = state.tx.send(ClientSideInput::MouseMove { dx, dy });
         }
     }
+}
+
+impl wayland_client::Dispatch<wayland_client::protocol::wl_region::WlRegion, ()> 
+    for ClientSideInputApplication 
+{
+    fn event(_: &mut Self, _: &wayland_client::protocol::wl_region::WlRegion,
+        _: wayland_client::protocol::wl_region::Event,
+        _: &(), _: &Connection, _: &QueueHandle<Self>) {}
 }
 
 // These two are needed to satisfy wayland-client's Dispatch bounds even though
@@ -581,7 +592,7 @@ impl SCT_SeatHandler for ClientSideInputApplication {
         seat: wlc_seat::WlSeat,
         capability: Capability,
     ) {
-        if capability == Capability::Keyboard && self.keyboard.is_none() {
+         if capability == Capability::Keyboard && self.keyboard.is_none() {
             println!("Keyboard capability found, binding...");
             let kbd = self.sct_seat_state.get_keyboard(qh, &seat, None).unwrap();
             self.keyboard = Some(kbd);
@@ -638,26 +649,29 @@ impl LayerShellHandler for ClientSideInputApplication {
         _: &Connection,
         qh: &QueueHandle<Self>,
         layer: &LayerSurface,
-        _configure: LayerSurfaceConfigure,
+        configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        // Use the compositor-assigned size; fall back to 1x1 if zero
+        let w = configure.new_size.0.max(1);
+        let h = configure.new_size.1.max(1);
+
         if self.pool.is_none() {
-            self.pool = Some(SlotPool::new(4, &self.client_shm).unwrap());
+            self.pool = Some(SlotPool::new(
+                (w * h * 4) as usize,
+                &self.client_shm,
+            ).unwrap());
         }
         let pool = self.pool.as_mut().unwrap();
 
-        // 1×1 fully-transparent buffer — satisfies the compositor's "must have
-        // a buffer" requirement without covering any screen area that would
-        // intercept pointer enter/leave events.
         let (buffer, canvas) = pool
-            .create_buffer(1, 1, 4, wl_shm::Format::Argb8888)
+            .create_buffer(w as i32, h as i32, w as i32 * 4, wl_shm::Format::Argb8888)
             .unwrap();
-        canvas.fill(0);
+        canvas.fill(0); // fully transparent
 
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
-        layer.wl_surface().damage_buffer(0, 0, 1, 1);
+        layer.wl_surface().damage_buffer(0, 0, w as i32, h as i32);
         layer.wl_surface().commit();
-        let _ = qh;
     }
 }
 
