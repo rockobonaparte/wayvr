@@ -4,6 +4,7 @@ use smithay::backend::renderer::{BufferType, buffer_type};
 use smithay::desktop::{PopupKind, PopupManager};
 use smithay::input::{Seat, SeatHandler, SeatState};
 use smithay::reexports::rustix::fs::{OFlags, fcntl_setfl};
+use smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::server::zwp_locked_pointer_v1;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration;
@@ -141,6 +142,43 @@ pub struct ClientSideInputApplication {
     pub tx: mpsc::Sender<ClientSideInput>,
     pub relative_pointer_manager: Option<ZwpRelativePointerManagerV1>,
     pub relative_pointer: Option<ZwpRelativePointerV1>,
+    pub pointer_constraints: Option<ZwpPointerConstraintsV1>,
+    pub locked_pointer: Option<ZwpLockedPointerV1>,
+    pub screen_width: u32,
+    pub screen_height: u32,    
+    pub layer_wl_surface: Option<wayland_client::protocol::wl_surface::WlSurface>,
+}
+
+impl ClientSideInputApplication {
+    // Pointer locking: keep the mouse cursor we're capturing from running
+    // around the screen and triggering stuff like KDE hot corners.
+    // We put this in a helper to be used in new_capability *and* configure
+    // based on the order of initialization from different compositors
+    fn try_lock_pointer(&mut self, qh: &QueueHandle<Self>) {
+        if self.locked_pointer.is_some() { return; }
+        let (Some(pc), Some(ptr), Some(surface)) = (
+            self.pointer_constraints.as_ref(),
+            self.pointer.as_ref(),
+            self.layer_wl_surface.as_ref(),
+        ) else { return; };
+
+        let locked = pc.lock_pointer(
+            surface,
+            ptr,
+            None,
+            zwp_pointer_constraints_v1::Lifetime::Persistent,
+            qh,
+            (),
+        );
+
+        // After locking, set the hint to center of screen
+        // These are in surface-local coordinates as wl_fixed
+        locked.set_cursor_position_hint(
+            (self.screen_width / 2) as f64,
+            (self.screen_height / 2) as f64,
+        );
+        self.locked_pointer = Some(locked);
+    }
 }
 
 sct_delegate_compositor!(ClientSideInputApplication);
@@ -435,7 +473,7 @@ impl KeyboardHandler for ClientSideInputApplication {
             "Key release: sym={:?}  raw={}",
             event.keysym, event.raw_code
         );
-        let _ = self.tx.send(ClientSideInput::KeyUp(event.raw_code));
+        let _ = self.tx.send(ClientSideInput::KeyUp(event.raw_code));   
     }
 
     fn update_modifiers(
@@ -549,6 +587,16 @@ impl wayland_client::Dispatch<ZwpRelativePointerV1, ()> for ClientSideInputAppli
         if let zwp_relative_pointer_v1::Event::RelativeMotion { dx, dy, .. } = event {
             println!("Mouse Relative: {dx} {dy}");
             let _ = state.tx.send(ClientSideInput::MouseMove { dx, dy });
+
+            // Keep warping back to center after every motion event
+            // This will lock the pointer so it can't bump into controls like
+            // hot corners in KDE.
+            if let Some(locked) = &state.locked_pointer {
+                locked.set_cursor_position_hint(
+                    (state.screen_width / 2) as f64,
+                    (state.screen_height / 2) as f64,
+                );
+            }            
         }
     }
 }
@@ -565,12 +613,17 @@ impl wayland_client::Dispatch<wayland_client::protocol::wl_region::WlRegion, ()>
 // we never create these object types.  They have no events in practice.
 impl wayland_client::Dispatch<ZwpPointerConstraintsV1, ()> for ClientSideInputApplication {
     fn event(_: &mut Self, _: &ZwpPointerConstraintsV1,
-        _: zwp_pointer_constraints_v1::Event, _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+        _: zwp_pointer_constraints_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>) {}
 }
 impl wayland_client::Dispatch<ZwpLockedPointerV1, ()> for ClientSideInputApplication {
     fn event(_: &mut Self, _: &ZwpLockedPointerV1,
         _: smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_locked_pointer_v1::Event,
-        _: &(), _: &Connection, _: &QueueHandle<Self>) {}
+        _: &(), _: &Connection, _: &QueueHandle<Self>) {
+
+        }
 }
 impl wayland_client::Dispatch<ZwpConfinedPointerV1, ()> for ClientSideInputApplication {
     fn event(_: &mut Self, _: &ZwpConfinedPointerV1,
@@ -608,7 +661,8 @@ impl SCT_SeatHandler for ClientSideInputApplication {
             }
 
             self.pointer = Some(pointer);
-        }
+            self.try_lock_pointer(qh);
+        }        
     }
 
     fn remove_capability(
@@ -672,6 +726,8 @@ impl LayerShellHandler for ClientSideInputApplication {
         layer.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
         layer.wl_surface().damage_buffer(0, 0, w as i32, h as i32);
         layer.wl_surface().commit();
+
+        self.try_lock_pointer(qh);
     }
 }
 

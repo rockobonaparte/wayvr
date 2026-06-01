@@ -69,7 +69,7 @@ use wgui::gfx::WGfx;
 use wlx_capture::frame::Transform;
 use wlx_common::desktop_finder::DesktopFinder;
 use xkbcommon::xkb;
-
+use smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
 use smithay::reexports::wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
 use crate::{
     backend::{
@@ -281,6 +281,9 @@ impl WvrServerState {
             let layer_shell      = LayerShell::bind(&globals, &qh).unwrap();
             let client_shm       = Shm::bind(&globals, &qh).unwrap();
 
+            let pointer_constraints: Option<ZwpPointerConstraintsV1> =
+                globals.bind(&qh, 1..=1, ()).ok();
+
             // Relative-pointer manager — gives us compositor-wide delta motion
             // without requiring a pointer lock or owning the cursor.
             let relative_pointer_manager: Option<ZwpRelativePointerManagerV1> =
@@ -298,6 +301,11 @@ impl WvrServerState {
                 tx,
                 relative_pointer_manager,
                 relative_pointer:        None,
+                pointer_constraints,
+                locked_pointer:          None,
+                layer_wl_surface:        None,
+                screen_width: 0,
+                screen_height: 0,
             };
 
             // Layer surface: still needed for KeyboardInteractivity::Exclusive,
@@ -317,6 +325,8 @@ impl WvrServerState {
             layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
 
             layer_surface.commit();
+
+            client_app.layer_wl_surface = Some(layer_surface.wl_surface().clone());
 
             while client_app.is_key_logging {
                 event_queue.blocking_dispatch(&mut client_app).expect("client side input thread failed to dispatch input events");
