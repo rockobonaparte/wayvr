@@ -2,16 +2,17 @@ pub mod client;
 mod comp;
 mod handle;
 mod image_importer;
+use crate::client_input;
 pub mod process;
 mod time;
 pub mod window;
 use anyhow::Context;
 use comp::Application;
-use comp::ClientSideInputApplication;
-use comp::ClientSideInput;
 use process::ProcessVec;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
+use client_input::wayland_client::{ClientSideInputApplication, ClientSideInput};
+
 use smithay::{
     desktop::PopupManager,
     input::{SeatState, keyboard::XkbConfig},

@@ -29,6 +29,7 @@ mod shaders;
 mod state;
 mod subsystem;
 mod windowing;
+mod client_input;
 
 use std::{
     path::PathBuf,
