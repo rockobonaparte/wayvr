@@ -11,7 +11,8 @@ use comp::Application;
 use process::ProcessVec;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
-use client_input::wayland_client::{ClientSideInputApplication, ClientSideInput};
+use client_input::wayland_client::ClientSideInputApplication;
+use client_input::{ClientInputThread, ClientSideInput};
 
 use smithay::{
     desktop::PopupManager,
@@ -36,21 +37,6 @@ use smithay::{
         shm::ShmState,
     },
 };
-use smithay_client_toolkit::{
-    compositor::{CompositorState},
-    output::{OutputState},
-    registry::{RegistryState},
-    seat::{
-        SeatState as SCT_SeatState
-    },
-    shell::{
-        WaylandSurface,
-        wlr_layer::{
-            Anchor, KeyboardInteractivity, Layer, LayerShell,
-        },
-    },    
-    shm::{Shm},
-};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -60,18 +46,11 @@ use std::{
     time::{Duration, Instant},
 };
 use vulkano::image::view::ImageView;
-use wayland_client::{
-    Connection,
-    globals::registry_queue_init,
-    QueueHandle,
-};
 use wayvr_ipc::{packet_client::PositionMode, packet_server};
 use wgui::gfx::WGfx;
 use wlx_capture::frame::Transform;
 use wlx_common::desktop_finder::DesktopFinder;
 use xkbcommon::xkb;
-use smithay::reexports::wayland_protocols::wp::pointer_constraints::zv1::client::zwp_pointer_constraints_v1::ZwpPointerConstraintsV1;
-use smithay::reexports::wayland_protocols::wp::relative_pointer::zv1::client::zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1;
 use crate::{
     backend::{
         task::{OverlayTask, TaskContainer, TaskType, ToggleMode},
@@ -273,66 +252,7 @@ impl WvrServerState {
         
         let (tx, rx) = mpsc::channel();
 
-        let client_input_handle = thread::spawn(|| {
-            let conn = Connection::connect_to_env().expect("client side input thread failed to connect to Wayland display");
-            let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
-            let qh: QueueHandle<ClientSideInputApplication> = event_queue.handle();
-
-            let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
-            let layer_shell      = LayerShell::bind(&globals, &qh).unwrap();
-            let client_shm       = Shm::bind(&globals, &qh).unwrap();
-
-            let pointer_constraints: Option<ZwpPointerConstraintsV1> =
-                globals.bind(&qh, 1..=1, ()).ok();
-
-            // Relative-pointer manager — gives us compositor-wide delta motion
-            // without requiring a pointer lock or owning the cursor.
-            let relative_pointer_manager: Option<ZwpRelativePointerManagerV1> =
-                globals.bind(&qh, 1..=1, ()).ok();
-
-            let mut client_app = ClientSideInputApplication {
-                client_shm,
-                registry_state:          RegistryState::new(&globals),
-                sct_seat_state:          SCT_SeatState::new(&globals, &qh),
-                output_state:            OutputState::new(&globals, &qh),
-                pool:                    None,
-                keyboard:                None,
-                pointer:                 None,
-                is_key_logging:          true,
-                tx,
-                relative_pointer_manager,
-                relative_pointer:        None,
-                pointer_constraints,
-                locked_pointer:          None,
-                layer_wl_surface:        None,
-                screen_width: 0,
-                screen_height: 0,
-            };
-
-            // Layer surface: still needed for KeyboardInteractivity::Exclusive,
-            // but size is now 1×1 (see LayerShellHandler::configure in comp.rs).
-            let surface = compositor_state.create_surface(&qh);
-            let layer_surface = layer_shell.create_layer_surface(
-                &qh,
-                surface,
-                Layer::Overlay,
-                Some("kbd-capture"),
-                None,
-            );
-            // 0,0 means "use the full output size" in layer-shell
-            layer_surface.set_size(0, 0);
-            layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT | Anchor::BOTTOM);
-            layer_surface.set_exclusive_zone(-1); // don't push other surfaces aside
-            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
-
-            layer_surface.commit();
-
-            client_app.layer_wl_surface = Some(layer_surface.wl_surface().clone());
-
-            while client_app.is_key_logging {
-                event_queue.blocking_dispatch(&mut client_app).expect("client side input thread failed to dispatch input events");
-            }
-        });
+        let client_input_handle: thread::JoinHandle<()> = ClientSideInputApplication::launch_input_thread(tx);
 
         let wvr_self = WvrServerState {
             manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,

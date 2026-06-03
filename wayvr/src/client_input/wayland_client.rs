@@ -1,4 +1,9 @@
+use crate::client_input::{ClientInputThread, ClientSideInput};
+
 use std::sync::mpsc;
+use std::sync::mpsc::Sender;
+use std::thread;
+use std::thread::JoinHandle;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler},
@@ -21,10 +26,12 @@ use smithay_client_toolkit::{
     shell::{
         WaylandSurface,
         wlr_layer::{
+            Anchor, KeyboardInteractivity, Layer, LayerShell, 
             LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
         },
     },
     shm::{Shm, ShmHandler as SCT_ShmHandler, slot::SlotPool},
+    compositor::{CompositorState},
 };
 
 use smithay::reexports::wayland_protocols::wp::{
@@ -42,6 +49,7 @@ use smithay::reexports::wayland_protocols::wp::{
 use wayland_client::{
     Connection, Proxy, QueueHandle,
     protocol::{wl_keyboard, wl_output as wlc_output, wl_pointer, wl_seat as wlc_seat, wl_shm, wl_surface},
+    globals::registry_queue_init,
 };
 
 // Client-side external keyboard and mouse logging
@@ -62,15 +70,6 @@ pub struct ClientSideInputApplication {
     pub screen_width: u32,
     pub screen_height: u32,    
     pub layer_wl_surface: Option<wayland_client::protocol::wl_surface::WlSurface>,
-}
-
-pub enum ClientSideInput {
-    KeyDown(u32),
-    KeyUp(u32),
-    MouseMove { dx: f64, dy: f64 },
-    MouseDown { button: u32 },
-    MouseUp   { button: u32 },
-    MouseScroll { dx: f64, dy: f64 },    
 }
 
 impl ClientSideInputApplication {
@@ -113,6 +112,71 @@ sct_delegate_pointer!(ClientSideInputApplication);
 sct_delegate_layer!(ClientSideInputApplication);
 sct_delegate_shm!(ClientSideInputApplication);
 sct_delegate_registry!(ClientSideInputApplication);
+
+impl ClientInputThread for ClientSideInputApplication {
+    fn launch_input_thread(tx: Sender<ClientSideInput>) -> JoinHandle<()> {
+        thread::spawn(|| {
+            let conn = Connection::connect_to_env().expect("client side input thread failed to connect to Wayland display");
+            let (globals, mut event_queue) = registry_queue_init(&conn).unwrap();
+            let qh: QueueHandle<ClientSideInputApplication> = event_queue.handle();
+
+            let compositor_state = CompositorState::bind(&globals, &qh).unwrap();
+            let layer_shell      = LayerShell::bind(&globals, &qh).unwrap();
+            let client_shm  = Shm::bind(&globals, &qh).unwrap();
+
+            let pointer_constraints: Option<ZwpPointerConstraintsV1> =
+                globals.bind(&qh, 1..=1, ()).ok();
+
+            // Relative-pointer manager — gives us compositor-wide delta motion
+            // without requiring a pointer lock or owning the cursor.
+            let relative_pointer_manager: Option<ZwpRelativePointerManagerV1> =
+                globals.bind(&qh, 1..=1, ()).ok();
+
+            let mut client_app = ClientSideInputApplication {
+                client_shm,
+                registry_state:          RegistryState::new(&globals),
+                sct_seat_state:          SCT_SeatState::new(&globals, &qh),
+                output_state:            OutputState::new(&globals, &qh),
+                pool:                    None,
+                keyboard:                None,
+                pointer:                 None,
+                is_key_logging:          true,
+                tx,
+                relative_pointer_manager,
+                relative_pointer:        None,
+                pointer_constraints,
+                locked_pointer:          None,
+                layer_wl_surface:        None,
+                screen_width: 0,
+                screen_height: 0,
+            };
+
+            // Layer surface: still needed for KeyboardInteractivity::Exclusive,
+            // but size is now 1×1 (see LayerShellHandler::configure in comp.rs).
+            let surface = compositor_state.create_surface(&qh);
+            let layer_surface = layer_shell.create_layer_surface(
+                &qh,
+                surface,
+                Layer::Overlay,
+                Some("kbd-capture"),
+                None,
+            );
+            // 0,0 means "use the full output size" in layer-shell
+            layer_surface.set_size(0, 0);
+            layer_surface.set_anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT | Anchor::BOTTOM);
+            layer_surface.set_exclusive_zone(-1); // don't push other surfaces aside
+            layer_surface.set_keyboard_interactivity(KeyboardInteractivity::Exclusive);
+
+            layer_surface.commit();
+
+            client_app.layer_wl_surface = Some(layer_surface.wl_surface().clone());
+
+            while client_app.is_key_logging {
+                event_queue.blocking_dispatch(&mut client_app).expect("client side input thread failed to dispatch input events");
+            }
+        })
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////
 // Client-side external keyboard and mouse logging app
