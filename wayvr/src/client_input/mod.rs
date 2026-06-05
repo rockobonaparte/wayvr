@@ -1,4 +1,5 @@
 pub mod wayland_client;
+pub mod libinput_client;
 
 use std::thread::JoinHandle;
 use std::sync::mpsc::Sender;
