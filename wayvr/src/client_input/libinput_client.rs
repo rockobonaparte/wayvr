@@ -188,7 +188,7 @@ impl ClientInputThread for LibInputApplication {
                             if pressed {
                                 let _ = tx.send(ClientSideInput::KeyDown(key.key()));
                             } else {
-                                let _ = tx.send(ClientSideInput::KeyDown(key.key()));
+                                let _ = tx.send(ClientSideInput::KeyUp(key.key()));
                             }
                         }
 
