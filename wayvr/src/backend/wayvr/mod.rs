@@ -554,6 +554,12 @@ impl WvrServerState {
                     println!(send_key up {}, key_code);
                 }
                 Ok(ClientSideInput::MouseMove { dx, dy }) => {
+                    // Scale mouse movement since there seems to be more window real estate
+                    // to WayVR windows.  We'll start with some hard-coded value and figure
+                    // out a better mechanism for this later.
+                    let scaled_dx = dx * 4.0;
+                    let scaled_dy = dy * 4.0; 
+                    
                     // Apply the relative delta to whichever WayVR window
                     // currently holds mouse focus, clamped to that window's size.
                     if let Some(mouse_state) = wvr_server.wm.mouse.clone() {
@@ -562,8 +568,8 @@ impl WvrServerState {
                             let w = window.size_x as f64;
                             let h = window.size_y as f64;
                             // Current position as f64, apply delta, clamp to window bounds.
-                            let new_x = (mouse_state.x as f64 + dx).clamp(0.0, w - 1.0) as u32;
-                            let new_y = (mouse_state.y as f64 + dy).clamp(0.0, h - 1.0) as u32;
+                            let new_x = (mouse_state.x as f64 + scaled_dx).clamp(0.0, w - 1.0) as u32;
+                            let new_y = (mouse_state.y as f64 + scaled_dy).clamp(0.0, h - 1.0) as u32;
                             wvr_server.send_mouse_move(handle, new_x, new_y);
                         }
                     }
