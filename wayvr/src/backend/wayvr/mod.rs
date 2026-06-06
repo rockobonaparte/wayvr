@@ -11,7 +11,7 @@ use comp::Application;
 use process::ProcessVec;
 use slotmap::SecondaryMap;
 use smallvec::SmallVec;
-use client_input::wayland_client::ClientSideInputApplication;
+use client_input::libinput_client::LibInputApplication;
 use client_input::{ClientInputThread, ClientSideInput};
 
 use smithay::{
@@ -252,7 +252,7 @@ impl WvrServerState {
         
         let (tx, rx) = mpsc::channel();
 
-        let client_input_handle: thread::JoinHandle<()> = ClientSideInputApplication::launch_input_thread(tx);
+        let client_input_handle: thread::JoinHandle<()> = LibInputApplication::launch_input_thread(tx);
 
         let wvr_self = WvrServerState {
             manager: client::WayVRCompositor::new(state, display, seat_keyboard, seat_pointer)?,
@@ -546,10 +546,12 @@ impl WvrServerState {
         loop {
             match wvr_server.rx.try_recv() {
                 Ok(ClientSideInput::KeyDown(key_code)) => {
+                    println!(send_key down {}, key_code);
                     wvr_server.send_key(key_code + 8, true);
                 }
                 Ok(ClientSideInput::KeyUp(key_code)) => {
                     wvr_server.send_key(key_code + 8, false);
+                    println!(send_key up {}, key_code);
                 }
                 Ok(ClientSideInput::MouseMove { dx, dy }) => {
                     // Apply the relative delta to whichever WayVR window
