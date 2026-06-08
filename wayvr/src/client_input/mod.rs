@@ -1,5 +1,6 @@
 pub mod wayland_client;
 pub mod libinput_client;
+pub mod key_combiner;
 
 use std::thread::JoinHandle;
 use std::sync::mpsc::Sender;
@@ -17,5 +18,6 @@ pub enum ClientSideInput {
     MouseMove { dx: f64, dy: f64 },
     MouseDown { button: u32 },
     MouseUp   { button: u32 },
-    MouseScroll { dx: f64, dy: f64 },    
+    MouseScroll { dx: f64, dy: f64 },
+    SpecialDebug { code: u32 },
 }

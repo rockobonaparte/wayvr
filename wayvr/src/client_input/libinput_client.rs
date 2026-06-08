@@ -1,4 +1,5 @@
 use crate::client_input::{ClientInputThread, ClientSideInput};
+use crate::client_input::key_combiner::KeyCombiner;
 
 use std::sync::mpsc::Sender;
 use std::thread;
@@ -140,6 +141,7 @@ pub struct LibInputApplication {
 impl ClientInputThread for LibInputApplication {
     fn launch_input_thread(tx: Sender<ClientSideInput>) -> JoinHandle<()> {
         thread::spawn(move || {
+            let mut key_combiner = KeyCombiner::new();
             check_input_group();
 
             let state = Arc::new(Mutex::new(GrabState::default()));
@@ -158,6 +160,10 @@ impl ClientInputThread for LibInputApplication {
             let fd = li.as_raw_fd();
 
             loop {
+                let mut grabbed = state.lock().unwrap();
+                let virtual_sysnames = grabbed.virtual_sysnames.clone();
+                drop(grabbed);
+
                 let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
                 let ret = unsafe { libc::poll(&mut pfd as *mut libc::pollfd, 1, -1) };
                 if ret < 0 {
@@ -186,9 +192,11 @@ impl ClientInputThread for LibInputApplication {
                             println!("[KBD] key {:>5}  {}", key.key(), state_str);
 
                             if pressed {
-                                let _ = tx.send(ClientSideInput::KeyDown(key.key()));
+                                //let _ = tx.send(ClientSideInput::KeyDown(key.key()));
+                                key_combiner.process(&tx, ClientSideInput::KeyDown(key.key()));
                             } else {
-                                let _ = tx.send(ClientSideInput::KeyUp(key.key()));
+                                //let _ = tx.send(ClientSideInput::KeyUp(key.key()));
+                                key_combiner.process(&tx, ClientSideInput::KeyUp(key.key()));
                             }
                         }
 

@@ -602,6 +602,9 @@ impl WvrServerState {
                 Ok(ClientSideInput::MouseScroll { dx, dy }) => {
                     wvr_server.send_mouse_scroll(WheelDelta { x: dx as f32, y: dy as f32 });
                 }
+                Ok(ClientSideInput::SpecialDebug {code}) => {
+                    println!("Special debug key code: {}", code);
+                }
                 Err(mpsc::TryRecvError::Empty)        => break,
                 Err(mpsc::TryRecvError::Disconnected) => break,
             }
