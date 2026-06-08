@@ -1,6 +1,7 @@
 use crate::client_input::{ClientInputThread, ClientSideInput};
 use crate::client_input::key_combiner::KeyCombiner;
 
+use std::collections::HashSet;
 use std::sync::mpsc::Sender;
 use std::thread;
 use std::thread::JoinHandle;
@@ -12,6 +13,7 @@ use input::{
         Event,
         keyboard::KeyboardEvent,
         PointerEvent,
+        EventTrait,
     },
     Libinput, LibinputInterface,
 };
@@ -41,10 +43,14 @@ fn eviocgrab(fd: RawFd, grab: bool) -> io::Result<()> {
 
 #[derive(Default)]
 struct GrabState {
-    /// All fds currently opened by libinput, keyed by raw fd number.
+    // All fds currently opened by libinput, keyed by raw fd number.
     fds:    HashMap<RawFd, ()>,
-    /// Whether we are currently grabbing.
+    
+    // Whether we are currently grabbing.
     active: bool,
+
+    // Disallow list for virtual devices like the WayVR keyboard and mouse
+    virtual_sysnames: HashSet<String>,
 }
 
 impl GrabState {
@@ -73,6 +79,38 @@ struct DirectInterface {
     state: Arc<Mutex<GrabState>>,
 }
 
+// Determine if a device is virtual device. This should filter out things
+// like the WayVR pointer device (aka "WayVR Mouse") in more more robust way
+// than just hammer hard-coded device names.
+//
+// It does assume the /sys/class/input/.../device hierarchy though.
+fn is_virtual_device(path: &Path) -> bool {
+    let Some(node_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let sysfs_link = Path::new("/sys/class/input").join(node_name);
+    match std::fs::canonicalize(&sysfs_link) {
+        Ok(resolved) => {
+            println!("is_virtual_device: testing path {}", resolved.to_string_lossy());
+            let is_virtual = resolved.to_string_lossy().contains("/virtual/");
+            if is_virtual {
+                eprintln!(
+                    "[GRAB]  skipping virtual device: {} → {}",
+                    path.display(),
+                    resolved.display()
+                );
+            }
+            is_virtual
+        }
+        Err(e) => {
+            eprintln!(
+                "[GRAB]  could not resolve sysfs path for {node_name}: {e} — assuming physical"
+            );
+            false
+        }
+    }
+}
+
 impl LibinputInterface for DirectInterface {
     fn open_restricted(&mut self, path: &Path, flags: i32) -> Result<OwnedFd, i32> {
         let file = OpenOptions::new()
@@ -83,7 +121,15 @@ impl LibinputInterface for DirectInterface {
             .map_err(|e| e.raw_os_error().unwrap_or(libc::EIO))?;
 
         let raw = file.as_raw_fd();
+
         let mut st = self.state.lock().unwrap();
+        if is_virtual_device(path) {
+            // Add these devices to a hit list in case we get events from them anyways.
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                st.virtual_sysnames.insert(name.to_string());
+            }
+        }
+        else {
         st.fds.insert(raw, ());
 
         // If a grab is already active when a new device appears, grab it too.
@@ -91,6 +137,8 @@ impl LibinputInterface for DirectInterface {
             if let Err(e) = eviocgrab(raw, true) {
                 eprintln!("EVIOCGRAB({raw}) on new device failed: {e}");
             }
+            }
+            println!("[GRAB] Grabbed {}", path.to_string_lossy());
         }
 
         Ok(file.into())
@@ -135,7 +183,6 @@ fn button_name(code: u32) -> &'static str {
 const KEY_ESC: u32 = 1;
 
 pub struct LibInputApplication {
-
 }
 
 impl ClientInputThread for LibInputApplication {
@@ -151,12 +198,6 @@ impl ClientInputThread for LibInputApplication {
             li.udev_assign_seat("seat0")
                 .expect("udev_assign_seat failed — are you in the `input` group?");
 
-            // Grab immediately so the very first events are captured.
-            state.lock().unwrap().grab_all();
-
-            println!("libinput-demo — Escape toggles grab, Ctrl-C quits");
-            println!();
-
             let fd = li.as_raw_fd();
 
             loop {
@@ -169,7 +210,7 @@ impl ClientInputThread for LibInputApplication {
                 if ret < 0 {
                     let err = io::Error::last_os_error();
                     if err.kind() == io::ErrorKind::Interrupted { break; }
-                    // Not returning this for now since the JoinHandle is just empty.
+                    // Not returning this for now since the JoinHandle is just emptthe JoinHandle is just emptasdasdy.
                     // We are sorting out how we want to handle errors in the input thread.
                     //return Err(err);
                 }
@@ -177,6 +218,14 @@ impl ClientInputThread for LibInputApplication {
                 li.dispatch().expect("libinput dispatch failed");
 
                 for event in &mut li {
+
+                    // Drop events from virtual devices entirely
+                    // (emphasis on WayVR virtual mouse and keyboard)
+                    let sysname = event.device().sysname().to_string();
+                    if virtual_sysnames.contains(&sysname) {
+                        continue;
+                    }
+
                     match event {
                         Event::Keyboard(KeyboardEvent::Key(key)) => {
                             let pressed = key.key_state() == KeyState::Pressed;
@@ -233,7 +282,8 @@ impl ClientInputThread for LibInputApplication {
                                 } else {
                                     0.0
                                 };
-                                println!("wheel dx: {} dy: {}", dx, dy);
+                                let dev = w.device(); 
+                                println!("wheel {} dx: {} dy: {}", dev.name(), dx, dy);
                                 let _ = tx.send(ClientSideInput::MouseScroll {dx, dy});
                             }
                             PointerEvent::ScrollFinger(f) => {
