@@ -91,6 +91,7 @@ where
                     let last_idx = data.screens.len() - 1;
                     for (idx, (meta, mut config)) in data.screens.into_iter().enumerate() {
                         config.show_on_spawn = true;
+                        
                         me.add(OverlayWindowData::from_config(config), app);
 
                         if idx < last_idx {

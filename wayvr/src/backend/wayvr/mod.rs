@@ -546,19 +546,19 @@ impl WvrServerState {
         loop {
             match wvr_server.rx.try_recv() {
                 Ok(ClientSideInput::KeyDown(key_code)) => {
-                    println!(send_key down {}, key_code);
+                    println!("send_key down {}", key_code);
                     wvr_server.send_key(key_code + 8, true);
                 }
                 Ok(ClientSideInput::KeyUp(key_code)) => {
                     wvr_server.send_key(key_code + 8, false);
-                    println!(send_key up {}, key_code);
+                    println!("send_key up {}", key_code);
                 }
                 Ok(ClientSideInput::MouseMove { dx, dy }) => {
                     // Scale mouse movement since there seems to be more window real estate
                     // to WayVR windows.  We'll start with some hard-coded value and figure
                     // out a better mechanism for this later.
                     let scaled_dx = dx * 4.0;
-                    let scaled_dy = dy * 4.0; 
+                    let scaled_dy = dy * 4.0;
                     
                     // Apply the relative delta to whichever WayVR window
                     // currently holds mouse focus, clamped to that window's size.
@@ -570,8 +570,14 @@ impl WvrServerState {
                             // Current position as f64, apply delta, clamp to window bounds.
                             let new_x = (mouse_state.x as f64 + scaled_dx).clamp(0.0, w - 1.0) as u32;
                             let new_y = (mouse_state.y as f64 + scaled_dy).clamp(0.0, h - 1.0) as u32;
+                            println!("send_mouse_move {} {} {}", handle.id(), new_x, new_y);                            
                             wvr_server.send_mouse_move(handle, new_x, new_y);
                         }
+                        else {
+                            println!("WayVRServer MouseMove handler cannot find a WindowHandle!");
+                        }
+                    } else {
+                        println!("WayVRServer MouseMove handler cannot find a MouseState!");
                     }
                 }
                 Ok(ClientSideInput::MouseDown { button }) => {
@@ -619,7 +625,7 @@ impl WvrServerState {
                             //wvr_server.wm.
                         },
                         2 => {
-                            
+
                         }
                         _ => {
                             println!("Special debug key code {} was not recognized", code);
@@ -630,7 +636,6 @@ impl WvrServerState {
                 Err(mpsc::TryRecvError::Disconnected) => break,
             }
         }
-
 
         wvr_server.manager.tick_wayland(&mut wvr_server.processes)?;
 

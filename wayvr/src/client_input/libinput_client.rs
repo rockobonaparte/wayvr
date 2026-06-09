@@ -130,13 +130,13 @@ impl LibinputInterface for DirectInterface {
             }
         }
         else {
-        st.fds.insert(raw, ());
+            st.fds.insert(raw, ());
 
-        // If a grab is already active when a new device appears, grab it too.
-        if st.active {
-            if let Err(e) = eviocgrab(raw, true) {
-                eprintln!("EVIOCGRAB({raw}) on new device failed: {e}");
-            }
+            // If a grab is already active when a new device appears, grab it too.
+            if st.active {
+                if let Err(e) = eviocgrab(raw, true) {
+                    eprintln!("EVIOCGRAB({raw}) on new device failed: {e}");
+                }
             }
             println!("[GRAB] Grabbed {}", path.to_string_lossy());
         }
