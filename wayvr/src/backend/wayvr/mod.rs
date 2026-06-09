@@ -604,6 +604,27 @@ impl WvrServerState {
                 }
                 Ok(ClientSideInput::SpecialDebug {code}) => {
                     println!("Special debug key code: {}", code);
+                    match code {
+                        1 => {
+                            println!("Dumping window handle and window information");
+                            for (handle, window) in wvr_server.wm.windows.iter() {
+                                println!("Handle {}: W={} H={} visible={}", 
+                                handle.id(),
+                                window.size_x,
+                                window.size_y,
+                                window.visible);
+                            }
+                            //wvr_server.manager.seat_pointer.current_focus().unwrap()
+                            //wvr_server.manager.seat_keyboard.current_focus().unwrap().
+                            //wvr_server.wm.
+                        },
+                        2 => {
+                            
+                        }
+                        _ => {
+                            println!("Special debug key code {} was not recognized", code);
+                        }
+                    }
                 }
                 Err(mpsc::TryRecvError::Empty)        => break,
                 Err(mpsc::TryRecvError::Disconnected) => break,

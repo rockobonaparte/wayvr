@@ -173,6 +173,13 @@ impl KeyCombiner {
                             let _ = tx.send(e);
                         }
                     },
+                    KEY_X => {
+                        if self.lmeta_pressed {
+                            let _ = tx.send(ClientSideInput::SpecialDebug {code: 2});
+                        } else {
+                            let _ = tx.send(e);
+                        }                        
+                    }
                     _ => {
                         let _ = tx.send(e);
                     }
