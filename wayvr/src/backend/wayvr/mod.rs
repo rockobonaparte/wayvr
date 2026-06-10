@@ -14,6 +14,7 @@ use smallvec::SmallVec;
 use client_input::libinput_client::LibInputApplication;
 use client_input::{ClientInputThread, ClientSideInput};
 
+use smithay::reexports::wayland_server::Resource;
 use smithay::{
     desktop::PopupManager,
     input::{SeatState, keyboard::XkbConfig},
@@ -625,7 +626,28 @@ impl WvrServerState {
                             //wvr_server.wm.
                         },
                         2 => {
+                            // BOOKMARK: You have app here so try to do stuff with it do see if you have agency.
+                            // app.screens.
+                            for screen in app.screens.iter() {
+                                println!("Screen {}", screen.name)
+                            }
+                            for (handle, window) in wvr_server.wm.windows.iter() {
+                                println!("Handle {}: W={} H={} visible={}", 
+                                handle.id(),
+                                window.size_x,
+                                window.size_y,
+                                window.visible);
+                            }
+                            
+                            // wvr_server.send_mouse_move(handle, 100, 100);
+                            
+                            // window.toplevel.wl_surface()
 
+
+                            // manager.seat_keyboard.set_focus(
+                            // &mut manager.state,
+                            // Some(surf),
+                            // manager.serial_counter.next_serial(),)
                         }
                         _ => {
                             println!("Special debug key code {} was not recognized", code);
