@@ -200,6 +200,11 @@ impl ClientInputThread for LibInputApplication {
 
             let fd = li.as_raw_fd();
 
+            // Start out with the inputs already grabbed
+            let mut st = state.lock().unwrap();
+            st.grab_all();
+            drop(st);
+
             loop {
                 let mut grabbed = state.lock().unwrap();
                 let virtual_sysnames = grabbed.virtual_sysnames.clone();
@@ -210,7 +215,7 @@ impl ClientInputThread for LibInputApplication {
                 if ret < 0 {
                     let err = io::Error::last_os_error();
                     if err.kind() == io::ErrorKind::Interrupted { break; }
-                    // Not returning this for now since the JoinHandle is just emptthe JoinHandle is just emptasdasdy.
+                    // Not returning this for now since the JoinHandle is just empty.
                     // We are sorting out how we want to handle errors in the input thread.
                     //return Err(err);
                 }
