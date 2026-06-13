@@ -236,9 +236,11 @@ impl ClientInputThread for LibInputApplication {
                             let pressed = key.key_state() == KeyState::Pressed;
 
                             // Escape toggles the grab on key-down only.
-                            if key.key() == KEY_ESC && pressed {
-                                let mut st = state.lock().unwrap();
-                                if st.active { st.ungrab_all(); } else { st.grab_all(); }
+                            if key.key() == KEY_ESC {
+                                if pressed {
+                                    let mut st = state.lock().unwrap();
+                                    if st.active { st.ungrab_all(); } else { st.grab_all(); }
+                                }
                                 continue;
                             }
 
