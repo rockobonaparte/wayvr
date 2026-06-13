@@ -571,11 +571,11 @@ impl WvrServerState {
                             // Current position as f64, apply delta, clamp to window bounds.
                             let new_x = (mouse_state.x as f64 + scaled_dx).clamp(0.0, w - 1.0) as u32;
                             let new_y = (mouse_state.y as f64 + scaled_dy).clamp(0.0, h - 1.0) as u32;
-                            println!("send_mouse_move {} {} {}", handle.id(), new_x, new_y);                            
+                            //println!("send_mouse_move {} {} {}", handle.id(), new_x, new_y);                            
                             wvr_server.send_mouse_move(handle, new_x, new_y);
                         }
                         else {
-                            println!("WayVRServer MouseMove handler cannot find a WindowHandle!");
+                            //println!("WayVRServer MouseMove handler cannot find a WindowHandle!");
                         }
                     } else {
                         println!("WayVRServer MouseMove handler cannot find a MouseState!");

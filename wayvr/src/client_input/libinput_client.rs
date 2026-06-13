@@ -251,7 +251,7 @@ impl ClientInputThread for LibInputApplication {
 
                         Event::Pointer(ptr) => match ptr {
                             PointerEvent::Motion(m) => {
-                                println!("[PTR] motion  dx={:+7.2}  dy={:+7.2}", m.dx(), m.dy());
+                                //println!("[PTR] motion  dx={:+7.2}  dy={:+7.2}", m.dx(), m.dy());
                                 let _ = tx.send(ClientSideInput::MouseMove { dx: m.dx(), dy: m.dy() });
                             }
                             PointerEvent::Button(b) => {
