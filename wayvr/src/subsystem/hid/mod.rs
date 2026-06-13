@@ -76,6 +76,7 @@ pub struct WheelDelta {
 
 pub trait HidProvider: Sync + Send {
     fn mouse_move(&mut self, pos: Vec2);
+    fn mouse_move_relative(&mut self, pos: Vec2);
     fn send_button(&mut self, button: u16, down: bool);
     fn wheel(&mut self, delta: WheelDelta);
     fn set_modifiers(&mut self, mods: u8);
@@ -94,6 +95,7 @@ struct MouseButtonAction {
 struct MouseAction {
     last_requested_pos: Option<Vec2>,
     pos: Option<Vec2>,
+    rel_pos: Option<Vec2>,
     button: Option<MouseButtonAction>,
     scroll: Option<WheelDelta>,
 }
@@ -229,6 +231,21 @@ impl UInputProvider {
             log::error!("{res}");
         }
     }
+    fn mouse_move_relative(&mut self, rel_pos: Vec2) {
+        #[cfg(debug_assertions)]
+        log::trace!("Mouse relative move: {rel_pos:?}");
+
+        let time = get_time();
+        let events = [
+            new_event(time, EV_REL, RelativeAxis::X as _, rel_pos.x as i32),
+            new_event(time, EV_REL, RelativeAxis::Y as _, rel_pos.y as i32),
+            new_event(time, EV_SYN, 0, 0),
+        ];
+        println!("Sending relative mouse move events");
+        if let Err(res) = self.mouse_handle.write(&events) {
+            log::error!("{res}");
+        }
+    }
 
     fn wheel_internal(&self, delta: WheelDelta) {
         let multiplier = 64.0; /* cherry-picked value, overall scrolling speed can be altered via `scroll_speed` in the config */
@@ -290,6 +307,16 @@ impl HidProvider for UInputProvider {
         }
         self.current_action.last_requested_pos = Some(pos);
     }
+    fn mouse_move_relative(&mut self, rel_pos: Vec2) {
+        self.current_action.rel_pos = match self.current_action.rel_pos {
+            Some(cur_rel_pos) => {
+                Some(cur_rel_pos + rel_pos)
+            },
+            None => {
+                Some(rel_pos)
+            }
+        };
+    }
     fn send_button(&mut self, button: u16, down: bool) {
         if self.current_action.button.is_none() {
             self.current_action.button = Some(MouseButtonAction { button, down });
@@ -310,6 +337,9 @@ impl HidProvider for UInputProvider {
         if let Some(pos) = self.current_action.pos.take() {
             self.mouse_move_internal(pos);
         }
+        if let Some(rel_pos) = self.current_action.rel_pos.take() {
+            self.mouse_move_relative(rel_pos);
+        }
         if let Some(button) = self.current_action.button.take() {
             self.send_button_internal(button.button, button.down);
         }
@@ -321,6 +351,7 @@ impl HidProvider for UInputProvider {
 
 impl HidProvider for DummyProvider {
     fn mouse_move(&mut self, _pos: Vec2) {}
+    fn mouse_move_relative(&mut self, _pos: Vec2) {}
     fn send_button(&mut self, _button: u16, _down: bool) {}
     fn wheel(&mut self, _delta: WheelDelta) {}
     fn set_modifiers(&mut self, _modifiers: u8) {}

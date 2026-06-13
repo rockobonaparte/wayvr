@@ -578,7 +578,11 @@ impl WvrServerState {
                             //println!("WayVRServer MouseMove handler cannot find a WindowHandle!");
                         }
                     } else {
-                        println!("WayVRServer MouseMove handler cannot find a MouseState!");
+                        // We won't get a MouseState for a shared screen, so we'll inject this using
+                        // the HID for the screen.
+                        let s_dx_32 = scaled_dx as f32;
+                        let s_dy_32 = scaled_dy as f32;
+                        app.hid_provider.inner.mouse_move_relative((s_dx_32, s_dy_32).into());
                     }
                 }
                 Ok(ClientSideInput::MouseDown { button }) => {

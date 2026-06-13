@@ -522,6 +522,7 @@ where
     // click / release
     let pointer = &mut app.input_state.pointers[hit.pointer];
     if pointer.now.click && !pointer.before.click {
+        println!("Registering click focus on overlay");
         pointer.interaction.clicked_id = Some(hit.overlay);
         update_focus(
             &mut app.hid_provider.keyboard_focus,
