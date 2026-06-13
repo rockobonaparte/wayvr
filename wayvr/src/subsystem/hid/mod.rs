@@ -241,7 +241,7 @@ impl UInputProvider {
             new_event(time, EV_REL, RelativeAxis::Y as _, rel_pos.y as i32),
             new_event(time, EV_SYN, 0, 0),
         ];
-        println!("Sending relative mouse move events");
+        //println!("Sending relative mouse move events");
         if let Err(res) = self.mouse_handle.write(&events) {
             log::error!("{res}");
         }
