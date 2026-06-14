@@ -103,6 +103,7 @@ struct MouseAction {
 pub struct UInputProvider {
     keyboard_handle: UInputHandle<File>,
     mouse_handle: UInputHandle<File>,
+    rel_mouse_handle: UInputHandle<File>,
     desktop_extent: Vec2,
     desktop_origin: Vec2,
     cur_modifiers: u8,
@@ -130,6 +131,9 @@ impl UInputProvider {
         let mouse_file = File::create("/dev/uinput").ok()?;
         let mouse_handle = UInputHandle::new(mouse_file);
 
+        let rel_mouse_file = File::create("/dev/uinput").ok()?;
+        let rel_mouse_handle = UInputHandle::new(rel_mouse_file);
+
         let kbd_id = InputId {
             bustype: 0x03,
             vendor: 0x4711,
@@ -142,8 +146,16 @@ impl UInputProvider {
             product: 0x0830,
             version: 5,
         };
+
+        let rel_mouse_id = InputId {
+            bustype: 0x03,
+            vendor: 0x4711,
+            product: 0x0831,
+            version: 5,
+        };
         let kbd_name = b"WayVR Keyboard\0";
         let mouse_name = b"WayVR Mouse\0";
+        let rel_mouse_name = b"WayVR Relative Mouse\0";
 
         let abs_info = vec![
             AbsoluteInfoSetup {
@@ -196,9 +208,20 @@ impl UInputProvider {
             .create(&mouse_id, mouse_name, 0, &abs_info)
             .ok()?;
 
+        rel_mouse_handle.set_evbit(EventKind::Relative).ok()?;
+        rel_mouse_handle.set_relbit(RelativeAxis::X).ok()?;
+        rel_mouse_handle.set_relbit(RelativeAxis::Y).ok()?;
+        rel_mouse_handle.set_evbit(EventKind::Key).ok()?;
+        for btn in MOUSE_LEFT..=MOUSE_MIDDLE {
+            let mouse_btn: Key = unsafe { transmute(btn) };
+            rel_mouse_handle.set_keybit(mouse_btn).ok()?;
+        }
+        rel_mouse_handle.create(&rel_mouse_id, rel_mouse_name, 0, &[]).ok()?;
+
         Some(Self {
             keyboard_handle,
             mouse_handle,
+            rel_mouse_handle,
             desktop_extent: Vec2::ZERO,
             desktop_origin: Vec2::ZERO,
             current_action: MouseAction::default(),
@@ -231,7 +254,7 @@ impl UInputProvider {
             log::error!("{res}");
         }
     }
-    fn mouse_move_relative(&mut self, rel_pos: Vec2) {
+    fn mouse_move_relative_internal(&mut self, rel_pos: Vec2) {
         #[cfg(debug_assertions)]
         log::trace!("Mouse relative move: {rel_pos:?}");
 
@@ -242,7 +265,7 @@ impl UInputProvider {
             new_event(time, EV_SYN, 0, 0),
         ];
         //println!("Sending relative mouse move events");
-        if let Err(res) = self.mouse_handle.write(&events) {
+        if let Err(res) = self.rel_mouse_handle.write(&events) {
             log::error!("{res}");
         }
     }
@@ -338,7 +361,7 @@ impl HidProvider for UInputProvider {
             self.mouse_move_internal(pos);
         }
         if let Some(rel_pos) = self.current_action.rel_pos.take() {
-            self.mouse_move_relative(rel_pos);
+            self.mouse_move_relative_internal(rel_pos);
         }
         if let Some(button) = self.current_action.button.take() {
             self.send_button_internal(button.button, button.down);
