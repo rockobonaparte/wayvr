@@ -81,6 +81,7 @@ pub trait HidProvider: Sync + Send {
     fn wheel(&mut self, delta: WheelDelta);
     fn set_modifiers(&mut self, mods: u8);
     fn send_key(&self, key: VirtualKey, down: bool);
+    fn send_key_u16(&self, key: u16, down: bool);
     fn set_desktop_extent(&mut self, extent: Vec2);
     fn set_desktop_origin(&mut self, origin: Vec2);
     fn commit(&mut self);
@@ -318,6 +319,19 @@ impl HidProvider for UInputProvider {
             log::error!("send_key: {res}");
         }
     }
+    fn send_key_u16(&self, key: u16, down: bool) {
+        #[cfg(debug_assertions)]
+        log::trace!("send_key_u16: {key:?} {down}");
+
+        let time = get_time();
+        let events = [
+            new_event(time, EV_KEY, key - 8, down.into()),
+            new_event(time, EV_SYN, 0, 0),
+        ];
+        if let Err(res) = self.keyboard_handle.write(&events) {
+            log::error!("send_key: {res}");
+        }
+    }
     fn set_desktop_extent(&mut self, extent: Vec2) {
         self.desktop_extent = extent;
     }
@@ -379,6 +393,7 @@ impl HidProvider for DummyProvider {
     fn wheel(&mut self, _delta: WheelDelta) {}
     fn set_modifiers(&mut self, _modifiers: u8) {}
     fn send_key(&self, _key: VirtualKey, _down: bool) {}
+    fn send_key_u16(&self, _key: u16, _down: bool) {}
     fn set_desktop_extent(&mut self, _extent: Vec2) {}
     fn set_desktop_origin(&mut self, _origin: Vec2) {}
     fn commit(&mut self) {}

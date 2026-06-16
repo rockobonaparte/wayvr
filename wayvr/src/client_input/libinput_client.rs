@@ -165,6 +165,7 @@ fn check_input_group() {
         eprintln!("  Run: sudo usermod -aG input $USER");
         eprintln!("  Then log out and back in (or: newgrp input).");
         eprintln!();
+        // TODO: Maybe just exit here?
     }
 }
 

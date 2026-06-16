@@ -38,6 +38,7 @@ use smithay::{
         shm::ShmState,
     },
 };
+use vulkano::image::ImageLayout::Preinitialized;
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -548,11 +549,31 @@ impl WvrServerState {
             match wvr_server.rx.try_recv() {
                 Ok(ClientSideInput::KeyDown(key_code)) => {
                     println!("send_key down {}", key_code);
-                    wvr_server.send_key(key_code + 8, true);
+
+                    // Using MouseState as a canary about the type of overlay we're driving.
+                    // Use the HID provider directly if we don't have a MouseState because
+                    // that implies controlling a screen, and not a window.
+                    if let Some(_mouse_state) = wvr_server.wm.mouse.clone() {                    
+                        wvr_server.send_key(key_code + 8, true);
+                    } else {
+                        println!("KeyDown null MouseState");
+                        // TODO: Drop event if key code is above u16
+                        //       We don't know if this even works yet so we're just forcing and unwrapping.
+                        app.hid_provider.inner.send_key_u16((key_code + 8).try_into().unwrap(), true);
+                    }
                 }
                 Ok(ClientSideInput::KeyUp(key_code)) => {
-                    wvr_server.send_key(key_code + 8, false);
                     println!("send_key up {}", key_code);
+
+                    // Using MouseState as a canary about the type of overlay we're driving.
+                    // Use the HID provider directly if we don't have a MouseState because
+                    // that implies controlling a screen, and not a window.
+                    if let Some(_mouse_state) = wvr_server.wm.mouse.clone() {                    
+                        wvr_server.send_key(key_code + 8, false);
+                    } else {
+                        println!("KeyUp null MouseState");
+                        app.hid_provider.inner.send_key_u16((key_code + 8).try_into().unwrap(), false);
+                    }
                 }
                 Ok(ClientSideInput::MouseMove { dx, dy }) => {
                     // Scale mouse movement since there seems to be more window real estate
@@ -597,6 +618,9 @@ impl WvrServerState {
                     if let (Some(index), Some(mouse_state)) = (index, wvr_server.wm.mouse.clone()) {
                         // click_freeze of 0 means no freeze delay — adjust if needed.
                         wvr_server.send_mouse_down(0, mouse_state.hover_window, index);
+                    } else {
+                        println!("MouseDown null MouseState");
+                        app.hid_provider.inner.send_button(button as u16, true);
                     }
                 }
                 Ok(ClientSideInput::MouseUp { button }) => {
@@ -606,12 +630,20 @@ impl WvrServerState {
                         0x112 => Some(MouseIndex::Center),
                         _     => None,
                     };
-                    if let Some(index) = index {
+                    if let (Some(index), Some(_mouse_state)) = (index, wvr_server.wm.mouse.clone()) {
                         wvr_server.send_mouse_up(index);
+                    } else {
+                        println!("MouseUp null MouseState");
+                        app.hid_provider.inner.send_button(button as u16, false);
                     }
                 }
                 Ok(ClientSideInput::MouseScroll { dx, dy }) => {
-                    wvr_server.send_mouse_scroll(WheelDelta { x: dx as f32, y: dy as f32 });
+                    if let Some(_mouse_state) = wvr_server.wm.mouse.clone() {
+                        wvr_server.send_mouse_scroll(WheelDelta { x: dx as f32, y: dy as f32 });
+                    } else {
+                        println!("MouseScroll null MouseState");
+                        app.hid_provider.inner.wheel(WheelDelta { x: dx as f32, y: dy as f32 });
+                    }
                 }
                 Ok(ClientSideInput::SpecialDebug {code}) => {
                     println!("Special debug key code: {}", code);
