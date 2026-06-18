@@ -317,6 +317,7 @@ impl WvrServerState {
                 location: point,
             },
         );
+        self.manager.seat_pointer.frame(&mut self.manager.state);
     }
 
     #[allow(clippy::too_many_lines)]
@@ -608,11 +609,14 @@ impl WvrServerState {
                     }
                 }
                 Ok(ClientSideInput::MouseMove { dx, dy }) => {
-                    // Apply the relative delta to whichever WayVR window
-                    // currently holds mouse focus, clamped to that window's size.
-                    if let Some(mouse_state) = wvr_server.wm.mouse.clone() {
+                    if app.hid_provider.keyboard_focus == KeyboardFocus::PhysicalScreen {
+                        // Ensure wm.mouse is cleared so future clicks don't misroute
+                        wvr_server.wm.mouse = None;
+                        app.hid_provider.inner.mouse_move_relative((dx as f32, dy as f32).into());
+                    } else if let Some(mouse_state) = wvr_server.wm.mouse.clone() {
                         let handle = mouse_state.hover_window;
                         if let Some(window) = wvr_server.wm.windows.get(&handle) {
+
                             let w = window.size_x as f64;
                             let h = window.size_y as f64;
 
@@ -628,12 +632,10 @@ impl WvrServerState {
                             //println!("send_mouse_move {} {} {}", handle.id(), new_x, new_y);                            
                             wvr_server.send_mouse_move(handle, new_x, new_y);
                         }
-                        else {
-                            //println!("WayVRServer MouseMove handler cannot find a WindowHandle!");
-                        }
                     } else {
                         // We won't get a MouseState for a shared screen, so we'll inject this using
                         // the HID for the screen.
+                        println!("MouseMove: Not physical screen, invalid MouseState, send relative");
                         app.hid_provider.inner.mouse_move_relative((dx as f32, dy as f32).into());
                     }
                 }
@@ -661,27 +663,46 @@ impl WvrServerState {
                         // so clients stop consuming the invents we want to now inject to the screen.
                         wvr_server.release_keyboard_focus();
                         wvr_server.release_pointer_focus();
+                        wvr_server.wm.mouse = None;
+                        app.hid_provider.keyboard_focus = KeyboardFocus::PhysicalScreen;
                         app.hid_provider.inner.send_button_relative(button as u16, true);
                     }
                 }
                 Ok(ClientSideInput::MouseUp { button }) => {
+                    // Map Linux evdev button codes to WayVR's MouseIndex.
+                    // 0x110 = BTN_LEFT, 0x111 = BTN_RIGHT, 0x112 = BTN_MIDDLE
                     let index = match button {
                         0x110 => Some(MouseIndex::Left),
                         0x111 => Some(MouseIndex::Right),
                         0x112 => Some(MouseIndex::Center),
                         _     => None,
                     };
-                    if let (Some(index), Some(_mouse_state)) = (index, wvr_server.wm.mouse.clone()) {
-                        wvr_server.send_mouse_up(index);
+
+                    let has_focus = wvr_server.wm.mouse.is_some();
+
+                    if has_focus {
+                        // Clicking a WayVR window
+                        if let (Some(index), Some(mouse_state)) = (index, wvr_server.wm.mouse.clone()) {
+                            // click_freeze of 0 means no freeze delay — adjust if needed.
+                            wvr_server.send_mouse_up(index);
+                        }
+                        app.hid_provider.keyboard_focus = KeyboardFocus::WayVR;
                     } else {
+                        // Clicking a host screen overlay. Release compositor keyboard focus
+                        // so clients stop consuming the invents we want to now inject to the screen.
+                        wvr_server.release_keyboard_focus();
+                        wvr_server.release_pointer_focus();
+                        wvr_server.wm.mouse = None;
+                        app.hid_provider.keyboard_focus = KeyboardFocus::PhysicalScreen;
                         app.hid_provider.inner.send_button_relative(button as u16, false);
                     }
                 }
                 Ok(ClientSideInput::MouseScroll { dx, dy }) => {
+                    // TODO: I think I may have to reverse one or both of these
+                    // TODO: Update with experiences gained from physical screen control in MouseMove/MouseDown/MouseUp
                     if let Some(_mouse_state) = wvr_server.wm.mouse.clone() {
                         wvr_server.send_mouse_scroll(WheelDelta { x: dx as f32, y: dy as f32 });
                     } else {
-                        println!("MouseScroll null MouseState");
                         // TODO: Bet this will need a relative equivalent too that goes to the relative device?
                         app.hid_provider.inner.wheel(WheelDelta { x: dx as f32, y: dy as f32 });
                     }
