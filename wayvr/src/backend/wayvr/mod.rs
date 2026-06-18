@@ -14,17 +14,19 @@ use smallvec::SmallVec;
 use client_input::libinput_client::LibInputApplication;
 use client_input::{ClientInputThread, ClientSideInput};
 use crate::subsystem::input::KeyboardFocus;
+use crate::subsystem::hid::VirtualKey;
+use strum::IntoEnumIterator;
 
 use smithay::reexports::wayland_server::Resource;
 use smithay::{
     desktop::PopupManager,
-    input::{SeatState, keyboard::XkbConfig},
+    input::{SeatState, keyboard::XkbConfig, pointer},
     output::{Mode, Output},
     reexports::{
         wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager as kde_decoration,
         wayland_server::{self, backend::ClientId},
     },
-    utils::{Logical, Size},
+    utils::{Logical, Size, Point},
     wayland::{
         compositor::{self, SurfaceData, with_states},
         dmabuf::{DmabufFeedbackBuilder, DmabufState},
@@ -138,6 +140,14 @@ pub enum TickTask {
 
 const KEY_REPEAT_DELAY: i32 = 200;
 const KEY_REPEAT_RATE: i32 = 50;
+
+fn virtual_key_from_xkb(xkb_code: u32) -> Option<VirtualKey> {
+    // VirtualKey is repr(u16) and values ARE the XKB keycodes
+    // Safe transmute if in range
+    use crate::subsystem::hid::VirtualKey;
+    // Try to find by value — VirtualKey::iter() is available via EnumIter
+    VirtualKey::iter().find(|vk| (*vk as u32) == xkb_code)
+}
 
 impl WvrServerState {
     pub fn new(
@@ -286,6 +296,27 @@ impl WvrServerState {
         //     window_to_overlay: HashMap::new(),
         //     overlay_to_window: SecondaryMap::new(),
         // })
+    }
+
+    pub fn release_keyboard_focus(&mut self) {
+        self.manager.seat_keyboard.set_focus(
+            &mut self.manager.state,
+            None::<wayland_server::protocol::wl_surface::WlSurface>,
+            self.manager.serial_counter.next_serial(),
+        );
+    }
+
+    pub fn release_pointer_focus(&mut self) {
+        let point = Point::<f64, Logical>::from((0.0, 0.0));
+        self.manager.seat_pointer.motion(
+            &mut self.manager.state,
+            None,
+            &pointer::MotionEvent {
+                serial: self.manager.serial_counter.next_serial(),
+                time: 0,
+                location: point,
+            },
+        );
     }
 
     #[allow(clippy::too_many_lines)]
@@ -551,43 +582,29 @@ impl WvrServerState {
                 Ok(ClientSideInput::KeyDown(key_code)) => {
                     println!("send_key down {}", key_code);
 
-                    // Using MouseState as a canary about the type of overlay we're driving.
-                    // Use the HID provider directly if we don't have a MouseState because
-                    // that implies controlling a screen, and not a window.
-                    if let Some(_mouse_state) = wvr_server.wm.mouse.clone() {                    
-                        wvr_server.send_key(key_code + 8, true);
-                    } else {
-                        println!("KeyDown null MouseState");
-                        // TODO: Drop event if key code is above u16
-                        //       We don't know if this even works yet so we're just forcing and unwrapping.
-                        app.hid_provider.keyboard_focus = KeyboardFocus::PhysicalScreen;
-                        //wvr_server.manager.seat_keyboard.set_focus(None, serial);
-                        wvr_server.manager.seat_keyboard.set_focus(
-                            &mut wvr_server.manager.state,
-                            None,
-                            wvr_server.manager.serial_counter.next_serial(),
-                        );                        
-                        app.hid_provider.inner.send_key_u16((key_code + 8).try_into().unwrap(), true);
+                    match app.hid_provider.keyboard_focus {
+                        KeyboardFocus::WayVR => {
+                            wvr_server.send_key(key_code + 8, true);
+                        }
+                        KeyboardFocus::PhysicalScreen => {
+                            if let Some(vk) = virtual_key_from_xkb(key_code + 8) {
+                                app.hid_provider.inner.send_key(vk, true);
+                            }
+                        }
                     }
                 }
                 Ok(ClientSideInput::KeyUp(key_code)) => {
                     println!("send_key up {}", key_code);
 
-                    // Using MouseState as a canary about the type of overlay we're driving.
-                    // Use the HID provider directly if we don't have a MouseState because
-                    // that implies controlling a screen, and not a window.
-                    if let Some(_mouse_state) = wvr_server.wm.mouse.clone() {                    
-                        wvr_server.send_key(key_code + 8, false);
-                    } else {
-                        println!("KeyUp null MouseState");
-                        app.hid_provider.keyboard_focus = KeyboardFocus::PhysicalScreen;
-                        //wvr_server.manager.seat_keyboard.set_focus(None, serial);
-                        wvr_server.manager.seat_keyboard.set_focus(
-                            &mut wvr_server.manager.state,
-                            None,
-                            wvr_server.manager.serial_counter.next_serial(),
-                        );                        
-                        app.hid_provider.inner.send_key_u16((key_code + 8).try_into().unwrap(), false);
+                    match app.hid_provider.keyboard_focus {
+                        KeyboardFocus::WayVR => {
+                            wvr_server.send_key(key_code + 8, false);
+                        }
+                        KeyboardFocus::PhysicalScreen => {
+                            if let Some(vk) = virtual_key_from_xkb(key_code + 8) {
+                                app.hid_provider.inner.send_key(vk, false);
+                            }
+                        }
                     }
                 }
                 Ok(ClientSideInput::MouseMove { dx, dy }) => {
@@ -629,12 +646,22 @@ impl WvrServerState {
                         0x112 => Some(MouseIndex::Center),
                         _     => None,
                     };
-                    if let (Some(index), Some(mouse_state)) = (index, wvr_server.wm.mouse.clone()) {
-                        // click_freeze of 0 means no freeze delay — adjust if needed.
-                        wvr_server.send_mouse_down(0, mouse_state.hover_window, index);
+
+                    let has_focus = wvr_server.wm.mouse.is_some();
+
+                    if has_focus {
+                        // Clicking a WayVR window
+                        if let (Some(index), Some(mouse_state)) = (index, wvr_server.wm.mouse.clone()) {
+                            // click_freeze of 0 means no freeze delay — adjust if needed.
+                            wvr_server.send_mouse_down(0, mouse_state.hover_window, index);
+                        }
+                        app.hid_provider.keyboard_focus = KeyboardFocus::WayVR;
                     } else {
-                        println!("MouseDown null MouseState");
-                        app.hid_provider.inner.send_button(button as u16, true);
+                        // Clicking a host screen overlay. Release compositor keyboard focus
+                        // so clients stop consuming the invents we want to now inject to the screen.
+                        wvr_server.release_keyboard_focus();
+                        wvr_server.release_pointer_focus();
+                        app.hid_provider.inner.send_button_relative(button as u16, true);
                     }
                 }
                 Ok(ClientSideInput::MouseUp { button }) => {
@@ -647,8 +674,7 @@ impl WvrServerState {
                     if let (Some(index), Some(_mouse_state)) = (index, wvr_server.wm.mouse.clone()) {
                         wvr_server.send_mouse_up(index);
                     } else {
-                        println!("MouseUp null MouseState");
-                        app.hid_provider.inner.send_button(button as u16, false);
+                        app.hid_provider.inner.send_button_relative(button as u16, false);
                     }
                 }
                 Ok(ClientSideInput::MouseScroll { dx, dy }) => {
@@ -656,6 +682,7 @@ impl WvrServerState {
                         wvr_server.send_mouse_scroll(WheelDelta { x: dx as f32, y: dy as f32 });
                     } else {
                         println!("MouseScroll null MouseState");
+                        // TODO: Bet this will need a relative equivalent too that goes to the relative device?
                         app.hid_provider.inner.wheel(WheelDelta { x: dx as f32, y: dy as f32 });
                     }
                 }

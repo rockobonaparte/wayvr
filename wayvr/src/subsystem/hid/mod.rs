@@ -78,6 +78,7 @@ pub trait HidProvider: Sync + Send {
     fn mouse_move(&mut self, pos: Vec2);
     fn mouse_move_relative(&mut self, pos: Vec2);
     fn send_button(&mut self, button: u16, down: bool);
+    fn send_button_relative(&mut self, button: u16, down: bool);
     fn wheel(&mut self, delta: WheelDelta);
     fn set_modifiers(&mut self, mods: u8);
     fn send_key(&self, key: VirtualKey, down: bool);
@@ -109,6 +110,7 @@ pub struct UInputProvider {
     desktop_origin: Vec2,
     cur_modifiers: u8,
     current_action: MouseAction,
+    current_action_relative: MouseAction,
 }
 
 pub struct DummyProvider;
@@ -226,6 +228,7 @@ impl UInputProvider {
             desktop_extent: Vec2::ZERO,
             desktop_origin: Vec2::ZERO,
             current_action: MouseAction::default(),
+            current_action_relative: MouseAction::default(),
             cur_modifiers: 0,
         })
     }
@@ -236,6 +239,16 @@ impl UInputProvider {
             new_event(time, EV_SYN, 0, 0),
         ];
         if let Err(res) = self.mouse_handle.write(&events) {
+            log::error!("send_button: {res}");
+        }
+    }
+    fn send_button_relative_internal(&self, button: u16, down: bool) {
+        let time = get_time();
+        let events = [
+            new_event(time, EV_KEY, button, down.into()),
+            new_event(time, EV_SYN, 0, 0),
+        ];
+        if let Err(res) = self.rel_mouse_handle.write(&events) {
             log::error!("send_button: {res}");
         }
     }
@@ -360,6 +373,11 @@ impl HidProvider for UInputProvider {
             self.current_action.pos = self.current_action.last_requested_pos;
         }
     }
+    fn send_button_relative(&mut self, button: u16, down: bool) {
+        if self.current_action_relative.button.is_none() {
+            self.current_action_relative.button = Some(MouseButtonAction { button, down });
+        }
+    }
 
     fn wheel(&mut self, delta: WheelDelta) {
         if self.current_action.scroll.is_none() {
@@ -380,6 +398,9 @@ impl HidProvider for UInputProvider {
         if let Some(button) = self.current_action.button.take() {
             self.send_button_internal(button.button, button.down);
         }
+        if let Some(rel_button) = self.current_action_relative.button.take() {
+            self.send_button_relative_internal(rel_button.button, rel_button.down);
+        }
         if let Some(scroll) = self.current_action.scroll.take() {
             self.wheel_internal(scroll);
         }
@@ -390,6 +411,7 @@ impl HidProvider for DummyProvider {
     fn mouse_move(&mut self, _pos: Vec2) {}
     fn mouse_move_relative(&mut self, _pos: Vec2) {}
     fn send_button(&mut self, _button: u16, _down: bool) {}
+    fn send_button_relative(&mut self, _button: u16, _down: bool) {}
     fn wheel(&mut self, _delta: WheelDelta) {}
     fn set_modifiers(&mut self, _modifiers: u8) {}
     fn send_key(&self, _key: VirtualKey, _down: bool) {}
