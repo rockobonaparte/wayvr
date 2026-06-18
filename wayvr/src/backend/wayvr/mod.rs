@@ -13,6 +13,7 @@ use slotmap::SecondaryMap;
 use smallvec::SmallVec;
 use client_input::libinput_client::LibInputApplication;
 use client_input::{ClientInputThread, ClientSideInput};
+use crate::subsystem::input::KeyboardFocus;
 
 use smithay::reexports::wayland_server::Resource;
 use smithay::{
@@ -559,6 +560,13 @@ impl WvrServerState {
                         println!("KeyDown null MouseState");
                         // TODO: Drop event if key code is above u16
                         //       We don't know if this even works yet so we're just forcing and unwrapping.
+                        app.hid_provider.keyboard_focus = KeyboardFocus::PhysicalScreen;
+                        //wvr_server.manager.seat_keyboard.set_focus(None, serial);
+                        wvr_server.manager.seat_keyboard.set_focus(
+                            &mut wvr_server.manager.state,
+                            None,
+                            wvr_server.manager.serial_counter.next_serial(),
+                        );                        
                         app.hid_provider.inner.send_key_u16((key_code + 8).try_into().unwrap(), true);
                     }
                 }
@@ -572,16 +580,17 @@ impl WvrServerState {
                         wvr_server.send_key(key_code + 8, false);
                     } else {
                         println!("KeyUp null MouseState");
+                        app.hid_provider.keyboard_focus = KeyboardFocus::PhysicalScreen;
+                        //wvr_server.manager.seat_keyboard.set_focus(None, serial);
+                        wvr_server.manager.seat_keyboard.set_focus(
+                            &mut wvr_server.manager.state,
+                            None,
+                            wvr_server.manager.serial_counter.next_serial(),
+                        );                        
                         app.hid_provider.inner.send_key_u16((key_code + 8).try_into().unwrap(), false);
                     }
                 }
                 Ok(ClientSideInput::MouseMove { dx, dy }) => {
-                    // Scale mouse movement since there seems to be more window real estate
-                    // to WayVR windows.  We'll start with some hard-coded value and figure
-                    // out a better mechanism for this later.
-                    let scaled_dx = dx * 4.0;
-                    let scaled_dy = dy * 4.0;
-                    
                     // Apply the relative delta to whichever WayVR window
                     // currently holds mouse focus, clamped to that window's size.
                     if let Some(mouse_state) = wvr_server.wm.mouse.clone() {
@@ -589,6 +598,13 @@ impl WvrServerState {
                         if let Some(window) = wvr_server.wm.windows.get(&handle) {
                             let w = window.size_x as f64;
                             let h = window.size_y as f64;
+
+                            // Scale mouse movement since there seems to be more window real estate
+                            // to WayVR windows.  We'll start with some hard-coded value and figure
+                            // out a better mechanism for this later.
+                            let scaled_dx = dx * 4.0;
+                            let scaled_dy = dy * 4.0;
+                            
                             // Current position as f64, apply delta, clamp to window bounds.
                             let new_x = (mouse_state.x as f64 + scaled_dx).clamp(0.0, w - 1.0) as u32;
                             let new_y = (mouse_state.y as f64 + scaled_dy).clamp(0.0, h - 1.0) as u32;
@@ -601,9 +617,7 @@ impl WvrServerState {
                     } else {
                         // We won't get a MouseState for a shared screen, so we'll inject this using
                         // the HID for the screen.
-                        let s_dx_32 = scaled_dx as f32;
-                        let s_dy_32 = scaled_dy as f32;
-                        app.hid_provider.inner.mouse_move_relative((s_dx_32, s_dy_32).into());
+                        app.hid_provider.inner.mouse_move_relative((dx as f32, dy as f32).into());
                     }
                 }
                 Ok(ClientSideInput::MouseDown { button }) => {
